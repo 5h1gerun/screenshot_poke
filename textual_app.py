@@ -1,12 +1,13 @@
 import threading
-import time
+import asyncio
 from typing import Optional
 
 from obswebsocket import obsws
 
 from textual.app import App, ComposeResult
+from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Header, Footer, Label, Input, Button, Checkbox, TextLog
+from textual.widgets import Header, Footer, Label, Input, Button, Checkbox, Log
 
 # 既存の処理スレッドを流用
 from combined_app import DoubleBattleThread, RkaisiTeisiThread, SyouhaiThread
@@ -83,14 +84,18 @@ class TextualObsApp(App):
         # ログ
         with Vertical(classes="section"):
             yield Label("ログ")
-            yield TextLog(id="log", highlight=True, wrap=True)
+            yield Log(id="log", highlight=True)
 
         yield Footer()
 
     # ============ ログ関連 ============
     def _append_log(self, message: str) -> None:
-        log = self.query_one("#log", TextLog)
-        log.write(message)
+        try:
+            log = self.query_one("#log", Log)
+            log.write(message)
+        except NoMatches:
+            # ログウィジェットが存在しない（終了時など）は無視
+            pass
 
     def _log_from_thread(self, message: str) -> None:
         # スレッドから安全にUIに反映
@@ -119,7 +124,7 @@ class TextualObsApp(App):
         # 既存接続があれば閉じる
         if self.ws is not None:
             try:
-                self.ws.disconnect()
+                await asyncio.to_thread(self.ws.disconnect)
             except Exception:
                 pass
             self.ws = None
@@ -127,7 +132,7 @@ class TextualObsApp(App):
         # 接続
         try:
             self.ws = obsws(host, port, password)
-            self.ws.connect()
+            await asyncio.to_thread(self.ws.connect)
             self._append_log(f"[App] OBS WebSocket 接続成功: {host}:{port}")
         except Exception as e:
             self._append_log(f"[App] OBS 接続失敗: {e}")
@@ -167,10 +172,10 @@ class TextualObsApp(App):
             self.thread_syouhai = None
 
         # 少し待ってから切断
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
         if self.ws is not None:
             try:
-                self.ws.disconnect()
+                await asyncio.to_thread(self.ws.disconnect)
                 self._append_log("[App] OBS 切断")
             except Exception:
                 pass
