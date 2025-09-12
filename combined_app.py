@@ -22,22 +22,36 @@ from tkinter import ttk
 
 def thread_safe_log(func):
     """
-    ログ出力（GUIテキストエリア）をスレッドセーフに呼び出すためのデコレータ。
+    ログ出力をスレッドセーフに呼び出すためのデコレータ。
+    - self.logger があればそれを利用（Textual等の外部コールバック想定）
+    - なければ Tk の Text へ after で追記
+    - さらに何も無ければ標準出力へ
     """
     def wrapper(self, message):
-        if self.log_text:
-            # GUIスレッドで動かすためにafterを使う
+        # Textual などから渡されるコールバックが優先
+        logger_cb = getattr(self, "logger", None)
+        if callable(logger_cb):
+            try:
+                logger_cb(message)
+            except Exception:
+                # フォールバックして標準出力
+                print(message)
+            return
+
+        # Tkinter のテキストウィジェットがある場合
+        if getattr(self, "log_text", None):
             self.log_text.after(0, lambda: func(self, message))
-        else:
-            # log_textが無い場合はコンソール出力のみ
-            print(message)
+            return
+
+        # どちらも無い場合はコンソール出力
+        print(message)
     return wrapper
 
 # ---------------------------------------------------
 # double_battle.py 相当
 # ---------------------------------------------------
 class DoubleBattleThread(threading.Thread):
-    def __init__(self, ws, ws_lock, base_dir, tesseract_path, log_text=None):
+    def __init__(self, ws, ws_lock, base_dir, tesseract_path, log_text=None, logger=None):
         super().__init__()
         self.ws = ws
         self.ws_lock = ws_lock  # 追加: OBS呼び出し時のロック
@@ -47,6 +61,7 @@ class DoubleBattleThread(threading.Thread):
         self.hozon_dir = os.path.join(base_dir, 'koutiku')
         self.stop_flag = False
         self.log_text = log_text
+        self.logger = logger
 
         pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
@@ -243,13 +258,14 @@ class DoubleBattleThread(threading.Thread):
 # rkaisi_teisi.py 相当
 # ---------------------------------------------------
 class RkaisiTeisiThread(threading.Thread):
-    def __init__(self, ws, ws_lock, base_dir, log_text=None):
+    def __init__(self, ws, ws_lock, base_dir, log_text=None, logger=None):
         super().__init__()
         self.ws = ws
         self.ws_lock = ws_lock
         self.base_dir = base_dir
         self.stop_flag = False
         self.log_text = log_text
+        self.logger = logger
 
         self.scene_image_path = os.path.join(self.base_dir, "scene2.png")
         self.masu1_template_path = os.path.join(self.base_dir, "masu1.png")
@@ -348,7 +364,7 @@ class RkaisiTeisiThread(threading.Thread):
 # syouhai.py 相当
 # ---------------------------------------------------
 class SyouhaiThread(threading.Thread):
-    def __init__(self, ws, ws_lock, base_dir, log_text=None):
+    def __init__(self, ws, ws_lock, base_dir, log_text=None, logger=None):
         super().__init__()
         self.ws = ws
         self.ws_lock = ws_lock
@@ -358,6 +374,7 @@ class SyouhaiThread(threading.Thread):
         self.scene_image_path = os.path.join(self.screenshot_dir, 'scene1.png')
         self.stop_flag = False
         self.log_text = log_text
+        self.logger = logger
 
         self.coords = {
             "win": [(450, 990), (696, 1020)],
