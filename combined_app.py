@@ -518,17 +518,17 @@ class App(tk.Tk):
 
         ttk.Label(obs_frame, text="Host:").grid(row=0, column=0, sticky=tk.E, padx=5, pady=3)
         self.host_entry = ttk.Entry(obs_frame, width=15)
-        self.host_entry.insert(0, "localhost")
+        self.host_entry.insert(0, os.getenv("OBS_HOST", "localhost"))
         self.host_entry.grid(row=0, column=1, padx=5, pady=3)
 
         ttk.Label(obs_frame, text="Port:").grid(row=0, column=2, sticky=tk.E, padx=5, pady=3)
         self.port_entry = ttk.Entry(obs_frame, width=7)
-        self.port_entry.insert(0, "4444")
+        self.port_entry.insert(0, os.getenv("OBS_PORT", "4444"))
         self.port_entry.grid(row=0, column=3, padx=5, pady=3)
 
         ttk.Label(obs_frame, text="Password:").grid(row=1, column=0, sticky=tk.E, padx=5, pady=3)
         self.pass_entry = ttk.Entry(obs_frame, show="*", width=15)
-        self.pass_entry.insert(0, "hustler3367")
+        self.pass_entry.insert(0, os.getenv("OBS_PASSWORD", ""))
         self.pass_entry.grid(row=1, column=1, padx=5, pady=3, sticky=tk.W)
 
         # -------------------------------------------------
@@ -539,13 +539,13 @@ class App(tk.Tk):
 
         ttk.Label(path_frame, text="Tesseract.exe:").grid(row=0, column=0, sticky=tk.E, padx=5, pady=3)
         self.tess_entry = ttk.Entry(path_frame, width=40)
-        self.tess_entry.insert(0, r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+        self.tess_entry.insert(0, os.getenv("TESSERACT_PATH", r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"))
         self.tess_entry.grid(row=0, column=1, padx=5, pady=3)
         ttk.Button(path_frame, text="参照", command=self.browse_tesseract).grid(row=0, column=2, padx=5, pady=3)
 
         ttk.Label(path_frame, text="ベースディレクトリ:").grid(row=1, column=0, sticky=tk.E, padx=5, pady=3)
         self.base_dir_entry = ttk.Entry(path_frame, width=40)
-        self.base_dir_entry.insert(0, r"C:\Users\sasak\work\python\obs\sensyutufail")
+        self.base_dir_entry.insert(0, os.getenv("BASE_DIR", os.getcwd()))
         self.base_dir_entry.grid(row=1, column=1, padx=5, pady=3)
         ttk.Button(path_frame, text="参照", command=self.browse_base_dir).grid(row=1, column=2, padx=5, pady=3)
 

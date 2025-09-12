@@ -1,0 +1,7 @@
+obs-websocket-py
+opencv-python
+numpy
+pillow
+pytesseract
+unidecode
+textual

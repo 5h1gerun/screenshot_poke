@@ -52,21 +52,21 @@ class TextualObsApp(App):
             yield Label("OBS 接続情報")
             with Horizontal(classes="row"):
                 yield Label("Host:")
-                yield Input(value="localhost", id="host", classes="grow")
+                yield Input(value=os.getenv("OBS_HOST", "localhost"), id="host", classes="grow")
                 yield Label("Port:")
-                yield Input(value="4444", id="port", classes="grow")
+                yield Input(value=os.getenv("OBS_PORT", "4444"), id="port", classes="grow")
                 yield Label("Password:")
-                yield Input(value="hustler3367", password=True, id="password", classes="grow")
+                yield Input(value=os.getenv("OBS_PASSWORD", ""), password=True, id="password", classes="grow")
 
         # パス設定
         with Vertical(classes="section"):
             yield Label("パス設定")
             with Horizontal(classes="row"):
                 yield Label("Tesseract 実行ファイル:")
-                yield Input(value=r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe", id="tesseract", classes="grow")
+                yield Input(value=os.getenv("TESSERACT_PATH", r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"), id="tesseract", classes="grow")
             with Horizontal(classes="row"):
                 yield Label("ベースディレクトリ:")
-                yield Input(value=r"C:\\Users\\sasak\\work\\python\\obs\\sensyutufail", id="base_dir", classes="grow")
+                yield Input(value=os.getenv("BASE_DIR", os.getcwd()), id="base_dir", classes="grow")
 
         # スクリプト選択
         with Vertical(classes="section"):
