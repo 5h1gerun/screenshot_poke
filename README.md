@@ -1,6 +1,6 @@
 # OBS スクリーンショット／テンプレート ツール（GUI専用）
 
-このリポジトリは、Tkinter ベースの GUI アプリケーション `combined_app.py` を提供します。OBS WebSocket 経由でシーンを取得し、テンプレートマッチングを実行して、OBS 向けの画像出力やテキスト更新を行います。
+このリポジトリは、CustomTkinter ベースの GUI アプリケーション `combined_app.py` を提供します。OBS WebSocket 経由でシーンを取得し、テンプレートマッチングを実行して、OBS 向けの画像出力やテキスト更新を行います。
 
 ## 必要条件
 - Python 3.10+
@@ -8,7 +8,7 @@
 - Windows / macOS / Linux（画面座標やテンプレート素材は環境に依存）
 
 ## セットアップ
-1. 依存関係のインストール:
+1. 依存関係のインストール（CustomTkinter を含む）:
 
 ```
 pip install -r requirements.txt
@@ -30,6 +30,7 @@ python combined_app.py
 起動後に確認:
 - OBS 接続情報（host、port、password）
 - ベースディレクトリ（`BASE_DIR`）: ここに `handantmp`、`haisin`、`koutiku` が存在（または生成）されます
+ - テーマ設定（外観: System/Light/Dark、アクセント: blue/dark-blue/green）
 
 ## ディレクトリ構成
 - `handantmp/`: テンプレート画像および作業中のスクリーンショット
@@ -45,4 +46,3 @@ python combined_app.py
 
 ## ライセンス
 本プロジェクトは MIT ライセンスで提供します。詳細は同梱の `LICENSE` ファイルを参照してください。
-

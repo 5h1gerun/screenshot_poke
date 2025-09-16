@@ -8,7 +8,7 @@ import datetime
 import tkinter as tk
 import tkinter.filedialog as fd
 import tkinter.messagebox as mb
-import tkinter.scrolledtext as st
+import customtkinter as ctk
 
 """
 combined_app.py
@@ -448,16 +448,19 @@ class SyouhaiThread(threading.Thread):
 # ---------------------------------------------------
 # メインGUI
 # ---------------------------------------------------
-class App(tk.Tk):
+class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("OBS Tool with Improved UI")
-        self.geometry("1920x1080")
+        # CustomTkinter グローバル設定（見た目）
+        ctk.set_appearance_mode("Dark")  # "System" / "Light" / "Dark"
+        ctk.set_default_color_theme("blue")  # "blue" / "dark-blue" / "green"
 
-        # ttkのテーマ設定
-        s = ttk.Style()
-        s.theme_use("clam")  # 好みのテーマに変更可
+        self.title("OBS Tool (CustomTkinter)")
+        self.geometry("1200x800")
+
+        # 現在選択中のアクセントテーマを保持（UI再構築時に反映）
+        self._accent_theme = "blue"
 
         # WS接続 & スレッド
         self.ws = None
@@ -470,80 +473,182 @@ class App(tk.Tk):
         self.create_widgets()
 
     def create_widgets(self):
-        # メインフレーム
-        main_frame = ttk.Frame(self, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # レイアウト: 左サイドバー + 右ログ
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        # -------------------------------------------------
-        # 上段: OBS接続設定
-        # -------------------------------------------------
-        obs_frame = ttk.Labelframe(main_frame, text="OBS接続情報", padding=10)
-        obs_frame.pack(fill=tk.X)
+        # タイトルバー風ラベル
+        title = ctk.CTkLabel(self, text="OBS Screenshot / Template Tool", font=ctk.CTkFont(size=22, weight="bold"))
+        title.grid(row=0, column=0, columnspan=2, sticky="we", padx=16, pady=(12, 0))
 
-        ttk.Label(obs_frame, text="Host:").grid(row=0, column=0, sticky=tk.E, padx=5, pady=3)
-        self.host_entry = ttk.Entry(obs_frame, width=15)
+        # サイドバー
+        sidebar = ctk.CTkFrame(self, corner_radius=10)
+        sidebar.grid(row=1, column=0, sticky="nsw", padx=(16, 8), pady=12)
+        sidebar.grid_rowconfigure(99, weight=1)
+
+        # ---- OBS 接続エリア ----
+        obs_frame = ctk.CTkFrame(sidebar, corner_radius=10)
+        obs_frame.grid(row=0, column=0, sticky="we", padx=8, pady=(8, 6))
+        ctk.CTkLabel(obs_frame, text="OBS 接続", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+
+        ctk.CTkLabel(obs_frame, text="Host").grid(row=1, column=0, sticky="e", padx=8, pady=4)
+        self.host_entry = ctk.CTkEntry(obs_frame, width=160)
         self.host_entry.insert(0, os.getenv("OBS_HOST", "localhost"))
-        self.host_entry.grid(row=0, column=1, padx=5, pady=3)
+        self.host_entry.grid(row=1, column=1, sticky="w", padx=8, pady=4)
 
-        ttk.Label(obs_frame, text="Port:").grid(row=0, column=2, sticky=tk.E, padx=5, pady=3)
-        self.port_entry = ttk.Entry(obs_frame, width=7)
+        ctk.CTkLabel(obs_frame, text="Port").grid(row=2, column=0, sticky="e", padx=8, pady=4)
+        self.port_entry = ctk.CTkEntry(obs_frame, width=120)
         self.port_entry.insert(0, os.getenv("OBS_PORT", "4444"))
-        self.port_entry.grid(row=0, column=3, padx=5, pady=3)
+        self.port_entry.grid(row=2, column=1, sticky="w", padx=8, pady=4)
 
-        ttk.Label(obs_frame, text="Password:").grid(row=0, column=0, sticky=tk.E, padx=5, pady=3)
-        self.pass_entry = ttk.Entry(obs_frame, show="*", width=15)
+        ctk.CTkLabel(obs_frame, text="Password").grid(row=3, column=0, sticky="e", padx=8, pady=(4, 12))
+        self.pass_entry = ctk.CTkEntry(obs_frame, show="*", width=160)
         self.pass_entry.insert(0, os.getenv("OBS_PASSWORD", ""))
-        self.pass_entry.grid(row=0, column=1, padx=5, pady=3, sticky=tk.W)
+        self.pass_entry.grid(row=3, column=1, sticky="w", padx=8, pady=(4, 12))
 
-        # -------------------------------------------------
-        # 中段: ベースディレクトリ設定
-        # -------------------------------------------------
-        path_frame = ttk.Labelframe(main_frame, text="パス設定", padding=10)
-        path_frame.pack(fill=tk.X, pady=5)
-
-        ttk.Label(path_frame, text="ベースディレクトリ:").grid(row=1, column=0, sticky=tk.E, padx=5, pady=3)
-        self.base_dir_entry = ttk.Entry(path_frame, width=40)
+        # ---- パス設定 ----
+        path_frame = ctk.CTkFrame(sidebar, corner_radius=10)
+        path_frame.grid(row=1, column=0, sticky="we", padx=8, pady=6)
+        ctk.CTkLabel(path_frame, text="パス設定", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 4))
+        ctk.CTkLabel(path_frame, text="ベースディレクトリ").grid(row=1, column=0, sticky="e", padx=8, pady=(4, 12))
+        self.base_dir_entry = ctk.CTkEntry(path_frame, width=220)
         self.base_dir_entry.insert(0, os.getenv("BASE_DIR", os.getcwd()))
-        self.base_dir_entry.grid(row=1, column=1, padx=5, pady=3)
-        ttk.Button(path_frame, text="参照", command=self.browse_base_dir).grid(row=0, column=2, padx=5, pady=3)
+        self.base_dir_entry.grid(row=1, column=1, sticky="w", padx=8, pady=(4, 12))
+        ctk.CTkButton(path_frame, text="参照", command=self.browse_base_dir).grid(row=1, column=2, sticky="w", padx=8, pady=(4, 12))
 
-        # -------------------------------------------------
-        # スクリプト選択
-        # -------------------------------------------------
-        script_frame = ttk.Labelframe(main_frame, text="実行するスクリプト", padding=10)
-        script_frame.pack(fill=tk.X, pady=5)
+        # ---- スクリプト選択 ----
+        script_frame = ctk.CTkFrame(sidebar, corner_radius=10)
+        script_frame.grid(row=2, column=0, sticky="we", padx=8, pady=6)
+        ctk.CTkLabel(script_frame, text="実行するスクリプト", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=8, pady=(8, 4))
 
         self.chk_double_var = tk.BooleanVar(value=True)
         self.chk_rkaisi_var = tk.BooleanVar(value=True)
         self.chk_syouhai_var = tk.BooleanVar(value=True)
 
-        ttk.Checkbutton(script_frame, text="double_battle(ダブルバトル)", variable=self.chk_double_var).pack(anchor=tk.W)
-        ttk.Checkbutton(script_frame, text="rkaisi_teisi(録画開始・停止)", variable=self.chk_rkaisi_var).pack(anchor=tk.W)
-        ttk.Checkbutton(script_frame, text="syouhai(勝敗判定)", variable=self.chk_syouhai_var).pack(anchor=tk.W)
+        ctk.CTkCheckBox(script_frame, text="double_battle (ダブルバトル)", variable=self.chk_double_var).pack(anchor="w", padx=8, pady=2)
+        ctk.CTkCheckBox(script_frame, text="rkaisi_teisi (録画開始・停止)", variable=self.chk_rkaisi_var).pack(anchor="w", padx=8, pady=2)
+        ctk.CTkCheckBox(script_frame, text="syouhai (勝敗判定)", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=(2, 8))
 
-        # -------------------------------------------------
-        # 実行／停止ボタン
-        # -------------------------------------------------
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=tk.X, pady=5)
+        # ---- コントロール ----
+        control_frame = ctk.CTkFrame(sidebar, corner_radius=10)
+        control_frame.grid(row=3, column=0, sticky="we", padx=8, pady=6)
+        ctk.CTkLabel(control_frame, text="操作", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+        ctk.CTkButton(control_frame, text="Start", command=self.start_threads, height=36).grid(row=1, column=0, sticky="we", padx=8, pady=6)
+        ctk.CTkButton(control_frame, text="Stop", command=self.stop_threads, height=36, fg_color="#8A1C1C").grid(row=1, column=1, sticky="we", padx=8, pady=6)
 
-        ttk.Button(btn_frame, text="Start", command=self.start_threads).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Stop", command=self.stop_threads).pack(side=tk.LEFT, padx=5)
+        # ---- テーマ設定 ----
+        theme_frame = ctk.CTkFrame(sidebar, corner_radius=10)
+        theme_frame.grid(row=4, column=0, sticky="we", padx=8, pady=(6, 12))
+        ctk.CTkLabel(theme_frame, text="テーマ", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+        ctk.CTkLabel(theme_frame, text="外観").grid(row=1, column=0, sticky="e", padx=8, pady=4)
+        appearance_opt = ctk.CTkOptionMenu(theme_frame, values=["System", "Light", "Dark"], command=self._change_appearance)
+        appearance_opt.set("Dark")
+        appearance_opt.grid(row=1, column=1, sticky="w", padx=8, pady=4)
+        ctk.CTkLabel(theme_frame, text="アクセント").grid(row=2, column=0, sticky="e", padx=8, pady=(4, 12))
+        theme_opt = ctk.CTkOptionMenu(theme_frame, values=["blue", "dark-blue", "green"], command=self._change_theme)
+        theme_opt.set(self._accent_theme)
+        theme_opt.grid(row=2, column=1, sticky="w", padx=8, pady=(4, 12))
 
-        # -------------------------------------------------
-        # 下段: ログ表示 (ScrolledText)
-        # -------------------------------------------------
-        log_frame = ttk.Labelframe(main_frame, text="ログ出力", padding=5)
-        log_frame.pack(fill=tk.BOTH, expand=True)
+        # 右側: ログ
+        right = ctk.CTkFrame(self, corner_radius=10)
+        right.grid(row=1, column=1, sticky="nsew", padx=(8, 16), pady=12)
+        right.grid_rowconfigure(1, weight=1)
+        right.grid_columnconfigure(0, weight=1)
 
-        self.log_text = st.ScrolledText(log_frame, wrap=tk.WORD, height=8)
-        self.log_text.pack(fill=tk.BOTH, expand=True)
+        ctk.CTkLabel(right, text="ログ出力", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+        log_container = ctk.CTkFrame(right)
+        log_container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        log_container.grid_rowconfigure(0, weight=1)
+        log_container.grid_columnconfigure(0, weight=1)
+
+        self.log_text = ctk.CTkTextbox(log_container, wrap="word")
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ctk.CTkScrollbar(log_container, command=self.log_text.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log_text.configure(yscrollcommand=scrollbar.set)
 
     def browse_base_dir(self):
         path = fd.askdirectory(title="ベースディレクトリ選択")
         if path:
             self.base_dir_entry.delete(0, tk.END)
             self.base_dir_entry.insert(0, path)
+
+    def _change_appearance(self, mode: str):
+        try:
+            ctk.set_appearance_mode(mode)
+        except Exception:
+            pass
+
+    def _change_theme(self, theme: str):
+        try:
+            ctk.set_default_color_theme(theme)
+            self._accent_theme = theme
+            # 既存ウィジェットに新テーマを反映するため UI を再構築
+            if self._any_threads_alive():
+                mb.showinfo("テーマ変更", "スレッド実行中はアクセント色の即時反映ができません。\nStop 後にもう一度お試しください。")
+                return
+            self._rebuild_ui_preserving_state()
+        except Exception as e:
+            mb.showerror("テーマ変更エラー", str(e))
+
+    def _any_threads_alive(self) -> bool:
+        try:
+            if self.thread_double and self.thread_double.is_alive():
+                return True
+        except Exception:
+            pass
+        try:
+            if self.thread_rkaisi and self.thread_rkaisi.is_alive():
+                return True
+        except Exception:
+            pass
+        try:
+            if self.thread_syouhai and self.thread_syouhai.is_alive():
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _rebuild_ui_preserving_state(self):
+        # 入力状態とログを保存
+        host = getattr(self, 'host_entry', None).get() if getattr(self, 'host_entry', None) else os.getenv("OBS_HOST", "localhost")
+        port = getattr(self, 'port_entry', None).get() if getattr(self, 'port_entry', None) else os.getenv("OBS_PORT", "4444")
+        password = getattr(self, 'pass_entry', None).get() if getattr(self, 'pass_entry', None) else os.getenv("OBS_PASSWORD", "")
+        base_dir = getattr(self, 'base_dir_entry', None).get() if getattr(self, 'base_dir_entry', None) else os.getcwd()
+        chk_double = getattr(self, 'chk_double_var', tk.BooleanVar(value=True)).get()
+        chk_rkaisi = getattr(self, 'chk_rkaisi_var', tk.BooleanVar(value=True)).get()
+        chk_syouhai = getattr(self, 'chk_syouhai_var', tk.BooleanVar(value=True)).get()
+        log_content = ""
+        if getattr(self, 'log_text', None):
+            try:
+                log_content = self.log_text.get("1.0", "end-1c")
+            except Exception:
+                log_content = ""
+
+        # 既存 UI を破棄
+        for child in self.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
+
+        # 再構築
+        self.create_widgets()
+
+        # 状態を復元
+        self.host_entry.delete(0, tk.END); self.host_entry.insert(0, host)
+        self.port_entry.delete(0, tk.END); self.port_entry.insert(0, port)
+        self.pass_entry.delete(0, tk.END); self.pass_entry.insert(0, password)
+        self.base_dir_entry.delete(0, tk.END); self.base_dir_entry.insert(0, base_dir)
+        self.chk_double_var.set(chk_double)
+        self.chk_rkaisi_var.set(chk_rkaisi)
+        self.chk_syouhai_var.set(chk_syouhai)
+        if log_content:
+            try:
+                self.log_text.insert("1.0", log_content)
+            except Exception:
+                pass
 
     def start_threads(self):
         host = self.host_entry.get()
