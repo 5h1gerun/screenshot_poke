@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import threading
+import concurrent.futures
 import tkinter as tk
 import tkinter.filedialog as fd
 import tkinter.messagebox as mb
@@ -65,6 +66,11 @@ class App(ctk.CTk):
         self._search_after_id: Optional[str] = None
         # Live tag edit debounce ids per filename
         self._tag_edit_after_ids: Dict[str, str] = {}
+        # Async thumbnail loader
+        self._thumb_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=int(os.getenv("GALLERY_WORKERS", "4") or 4)
+        )
+        self._gallery_load_token: Optional[int] = None
 
         self._build_ui()
 
@@ -537,6 +543,11 @@ class App(ctk.CTk):
         return os.path.join(base_dir, "koutiku")
 
     def _reload_gallery(self) -> None:
+        # Token to ignore stale async callbacks from prior reloads
+        try:
+            self._gallery_load_token = (0 if self._gallery_load_token is None else self._gallery_load_token + 1)
+        except Exception:
+            self._gallery_load_token = 0
         # Update path label
         try:
             self._gallery_path_label.configure(text=self._current_koutiku_path())
@@ -554,16 +565,26 @@ class App(ctk.CTk):
             pass
         self._thumb_refs.clear()
 
-        # Collect image files
+        # Collect image files (fast): use scandir and prefetch mtime
         exts = {".png", ".jpg", ".jpeg", ".webp"}
         try:
-            files = [
-                os.path.join(koutiku, f)
-                for f in os.listdir(koutiku)
-                if os.path.splitext(f)[1].lower() in exts
-            ]
+            items: list[tuple[str, float]] = []  # (path, mtime)
+            with os.scandir(koutiku) as it:
+                for entry in it:
+                    try:
+                        if not entry.is_file():
+                            continue
+                        if os.path.splitext(entry.name)[1].lower() not in exts:
+                            continue
+                        try:
+                            mt = entry.stat().st_mtime
+                        except Exception:
+                            mt = 0.0
+                        items.append((entry.path, mt))
+                    except Exception:
+                        continue
         except Exception:
-            files = []
+            items = []
 
         # Load tags and filter by search query
         self._load_gallery_tags()
@@ -582,34 +603,67 @@ class App(ctk.CTk):
                         if t.lower() in name.lower():
                             return True
                 return False
-            files = [p for p in files if _match(p)]
+            items = [(p, mt) for (p, mt) in items if _match(p)]
 
-        files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        # Sort by mtime (desc) using prefetched metadata
+        items.sort(key=lambda x: x[1], reverse=True)
         max_items = int(os.getenv("GALLERY_MAX", "100") or 100)
-        files = files[:max_items]
+        items = items[:max_items]
+        files = [p for (p, _mt) in items]
 
         # Layout config
         cols = 4
         thumb_w = int(os.getenv("GALLERY_THUMB", "240") or 240)
         pad = 8
 
+        # Shared placeholder to keep UI responsive while thumbnails load
+        placeholder_ctk = None
+        placeholder_h = max(80, int(thumb_w * 9 / 16))
+        try:
+            from PIL import Image as _PILImage
+            _ph = _PILImage.new("RGB", (thumb_w, placeholder_h), color=(64, 64, 64))
+            placeholder_ctk = ctk.CTkImage(light_image=_ph, dark_image=_ph, size=(thumb_w, placeholder_h))
+        except Exception:
+            pass
+
+        def _load_thumb_pil(path: str, max_w: int):
+            # Load and resize in worker thread; return PIL image and size
+            try:
+                with Image.open(path) as im:
+                    w, h = im.size
+                    if w <= 0 or h <= 0:
+                        return None
+                    scale = min(1.0, max_w / float(w))
+                    tw = max(1, int(w * scale))
+                    th = max(1, int(h * scale))
+                    # Faster downscale for thumbnails
+                    thumb = im.copy()
+                    thumb = thumb.resize((tw, th), Image.BILINEAR)
+                    return (thumb, tw, th)
+            except Exception:
+                return None
+
+        def _apply_thumb(btn: ctk.CTkButton, fname: str, path: str, token: int, result):
+            # Runs on Tk thread
+            try:
+                if not btn.winfo_exists():
+                    return
+                if token != self._gallery_load_token:
+                    return  # a newer reload happened
+                if not result:
+                    return
+                img_pil, tw, th = result
+                tk_img = ctk.CTkImage(light_image=img_pil, dark_image=img_pil, size=(tw, th))
+                self._thumb_refs.append(tk_img)
+                btn.configure(image=tk_img, width=tw + 8, height=th + 36)
+            except Exception:
+                pass
+
         row = 0
         col = 0
+        current_token = self._gallery_load_token
         for path in files:
             try:
-                img = Image.open(path)
-                # Keep aspect ratio and fit width
-                w, h = img.size
-                if w <= 0 or h <= 0:
-                    continue
-                scale = min(1.0, thumb_w / float(w))
-                tw = int(w * scale)
-                th = int(h * scale)
-                thumb = img.copy()
-                thumb = thumb.resize((tw, th), Image.LANCZOS)
-                tk_img = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=(tw, th))
-                self._thumb_refs.append(tk_img)
-
                 # Cell frame per item (button + tags label)
                 cell = ctk.CTkFrame(self._gallery_scroll, fg_color="transparent")
                 cell.grid(row=row, column=col, padx=pad, pady=pad, sticky="n")
@@ -618,15 +672,14 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
-                # Button with image + filename under it
                 fname = os.path.basename(path)
                 btn = ctk.CTkButton(
                     cell,
-                    image=tk_img,
+                    image=placeholder_ctk,
                     text=fname,
                     compound="top",
-                    width=tw + 8,
-                    height=th + 36,
+                    width=(thumb_w + 8),
+                    height=(placeholder_h + 36),
                     command=lambda p=path: self._open_image_viewer(p),
                 )
                 btn.grid(row=0, column=0, sticky="n")
@@ -651,12 +704,26 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
+                # Dispatch background load
+                future = self._thumb_executor.submit(_load_thumb_pil, path, thumb_w)
+
+                def _on_done(fut, b=btn, fn=fname, p=path, tok=current_token):
+                    try:
+                        res = fut.result()
+                    except Exception:
+                        res = None
+                    try:
+                        self.after(0, _apply_thumb, b, fn, p, tok, res)
+                    except Exception:
+                        pass
+
+                future.add_done_callback(_on_done)
+
                 col += 1
                 if col >= cols:
                     col = 0
                     row += 1
             except Exception:
-                # Skip problematic file
                 continue
 
     def _open_image_viewer(self, path: str) -> None:
