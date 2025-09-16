@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 import customtkinter as ctk
+from PIL import Image
 
 from app.obs_client import ObsClient
 from app.threads.double_battle import DoubleBattleThread
@@ -47,6 +48,10 @@ class App(ctk.CTk):
         self.chk_rkaisi_var = tk.BooleanVar(value=self._env_bool("ENABLE_RKAISI", True))
         self.chk_syouhai_var = tk.BooleanVar(value=self._env_bool("ENABLE_SYOUHAI", True))
         self.log_text: ctk.CTkTextbox
+        # Gallery state
+        self._thumb_refs: list[ctk.CTkImage] = []
+        self._auto_refresh_var = tk.BooleanVar(value=True)
+        self._gallery_after_id: Optional[str] = None
 
         self._build_ui()
 
@@ -131,23 +136,36 @@ class App(ctk.CTk):
         self.theme_opt.set(self._accent_theme)
         self.theme_opt.grid(row=2, column=1, sticky="w", padx=8, pady=(4, 12))
 
-        # Right: log
+        # Right: Tabview with Log / Gallery
         right = ctk.CTkFrame(self, corner_radius=10)
         right.grid(row=1, column=1, sticky="nsew", padx=(8, 16), pady=12)
-        right.grid_rowconfigure(1, weight=1)
+        right.grid_rowconfigure(0, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(right, text="Log", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
-        log_container = ctk.CTkFrame(right)
-        log_container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        tabs = ctk.CTkTabview(right)
+        tabs.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        tab_log = tabs.add("Log")
+        tab_gallery = tabs.add("Gallery")
+
+        # Log tab
+        tab_log.grid_rowconfigure(0, weight=1)
+        tab_log.grid_columnconfigure(0, weight=1)
+        log_container = ctk.CTkFrame(tab_log)
+        log_container.grid(row=0, column=0, sticky="nsew")
         log_container.grid_rowconfigure(0, weight=1)
         log_container.grid_columnconfigure(0, weight=1)
-
         self.log_text = ctk.CTkTextbox(log_container, wrap="word")
         self.log_text.grid(row=0, column=0, sticky="nsew")
         scrollbar = ctk.CTkScrollbar(log_container, command=self.log_text.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=scrollbar.set)
+
+        # Gallery tab
+        self._build_gallery_ui(tab_gallery)
+        # Initial load
+        self.after(200, self._reload_gallery)
+        # Auto-refresh if enabled
+        self._schedule_gallery_refresh()
 
     # --- callbacks ---
     def _browse_base_dir(self) -> None:
@@ -234,6 +252,12 @@ class App(ctk.CTk):
                 self.log_text.insert("1.0", log_content)
             except Exception:
                 pass
+
+        # After rebuilding, refresh gallery
+        try:
+            self._reload_gallery()
+        except Exception:
+            pass
 
     # --- start/stop ---
     def _start_threads(self) -> None:
@@ -410,6 +434,173 @@ class App(ctk.CTk):
             mb.showerror("Save Error", f"Failed to save settings to {dotenv_path}\n{e}")
             return
 
+
+    # --- Gallery ---
+    def _build_gallery_ui(self, parent: ctk.CTkFrame) -> None:
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        ctrl = ctk.CTkFrame(parent)
+        ctrl.grid(row=0, column=0, sticky="we", pady=(4, 6))
+        ctrl.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(ctrl, text="koutiku:").grid(row=0, column=0, sticky="w", padx=(8, 6), pady=6)
+        self._gallery_path_label = ctk.CTkLabel(ctrl, text=self._current_koutiku_path(), anchor="w")
+        self._gallery_path_label.grid(row=0, column=1, sticky="we", pady=6)
+
+        ctk.CTkButton(ctrl, text="Reload", width=80, command=self._reload_gallery).grid(row=0, column=2, padx=6)
+        ctk.CTkSwitch(ctrl, text="Auto Refresh", variable=self._auto_refresh_var, command=self._toggle_auto_refresh).grid(row=0, column=3, padx=(6, 8))
+
+        # Scrollable grid for thumbnails
+        self._gallery_scroll = ctk.CTkScrollableFrame(parent, corner_radius=8)
+        self._gallery_scroll.grid(row=1, column=0, sticky="nsew")
+        for i in range(4):
+            self._gallery_scroll.grid_columnconfigure(i, weight=1)
+
+    def _current_koutiku_path(self) -> str:
+        base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
+        return os.path.join(base_dir, "koutiku")
+
+    def _reload_gallery(self) -> None:
+        # Update path label
+        try:
+            self._gallery_path_label.configure(text=self._current_koutiku_path())
+        except Exception:
+            pass
+
+        koutiku = self._current_koutiku_path()
+        os.makedirs(koutiku, exist_ok=True)
+
+        # Clear previous thumbnails
+        try:
+            for child in self._gallery_scroll.winfo_children():
+                child.destroy()
+        except Exception:
+            pass
+        self._thumb_refs.clear()
+
+        # Collect image files
+        exts = {".png", ".jpg", ".jpeg", ".webp"}
+        try:
+            files = [
+                os.path.join(koutiku, f)
+                for f in os.listdir(koutiku)
+                if os.path.splitext(f)[1].lower() in exts
+            ]
+        except Exception:
+            files = []
+
+        files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        max_items = int(os.getenv("GALLERY_MAX", "100") or 100)
+        files = files[:max_items]
+
+        # Layout config
+        cols = 4
+        thumb_w = int(os.getenv("GALLERY_THUMB", "240") or 240)
+        pad = 8
+
+        row = 0
+        col = 0
+        for path in files:
+            try:
+                img = Image.open(path)
+                # Keep aspect ratio and fit width
+                w, h = img.size
+                if w <= 0 or h <= 0:
+                    continue
+                scale = min(1.0, thumb_w / float(w))
+                tw = int(w * scale)
+                th = int(h * scale)
+                thumb = img.copy()
+                thumb = thumb.resize((tw, th), Image.LANCZOS)
+                tk_img = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=(tw, th))
+                self._thumb_refs.append(tk_img)
+
+                # Button with image + filename under it
+                fname = os.path.basename(path)
+                btn = ctk.CTkButton(
+                    self._gallery_scroll,
+                    image=tk_img,
+                    text=fname,
+                    compound="top",
+                    width=tw + 8,
+                    height=th + 36,
+                    command=lambda p=path: self._open_image_viewer(p),
+                )
+                btn.grid(row=row, column=col, padx=pad, pady=pad, sticky="n")
+
+                col += 1
+                if col >= cols:
+                    col = 0
+                    row += 1
+            except Exception:
+                # Skip problematic file
+                continue
+
+    def _open_image_viewer(self, path: str) -> None:
+        try:
+            img = Image.open(path)
+        except Exception as e:
+            mb.showerror("Open Image", f"Failed to open image\n{e}")
+            return
+
+        top = ctk.CTkToplevel(self)
+        top.title(os.path.basename(path))
+        # Limit size to a reasonable maximum and screen size
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+        except Exception:
+            sw, sh = 1600, 900
+        max_w = min(1200, int(sw * 0.9))
+        max_h = min(900, int(sh * 0.9))
+
+        w, h = img.size
+        scale = min(max_w / float(w), max_h / float(h), 1.0)
+        vw = int(w * scale)
+        vh = int(h * scale)
+        view_img = img.copy().resize((vw, vh), Image.LANCZOS)
+        tk_img = ctk.CTkImage(light_image=view_img, dark_image=view_img, size=(vw, vh))
+
+        frame = ctk.CTkFrame(top)
+        frame.grid(row=0, column=0, padx=12, pady=12)
+        lbl = ctk.CTkLabel(frame, image=tk_img, text="")
+        lbl.grid(row=0, column=0)
+
+        # Keep a reference on the toplevel to avoid GC
+        top._img_ref = tk_img  # type: ignore[attr-defined]
+        top.geometry(f"{vw+40}x{vh+80}")
+
+        # Close on ESC
+        try:
+            top.bind("<Escape>", lambda e: top.destroy())
+        except Exception:
+            pass
+
+    def _toggle_auto_refresh(self) -> None:
+        if self._auto_refresh_var.get():
+            self._schedule_gallery_refresh()
+        else:
+            if self._gallery_after_id is not None:
+                try:
+                    self.after_cancel(self._gallery_after_id)
+                except Exception:
+                    pass
+                self._gallery_after_id = None
+
+    def _schedule_gallery_refresh(self) -> None:
+        if not self._auto_refresh_var.get():
+            return
+        try:
+            self._reload_gallery()
+        except Exception:
+            pass
+        # Schedule next refresh
+        try:
+            # every 20 minutes (20 * 60 * 1000 ms)
+            self._gallery_after_id = self.after(1200000, self._schedule_gallery_refresh)
+        except Exception:
+            self._gallery_after_id = None
 
 def main() -> None:
     app = App()

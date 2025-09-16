@@ -15,3 +15,15 @@ venv/
 
 # Environment files
 .env
+
+# Generated screenshots in koutiku (do not commit new images)
+# Keep readme.md but ignore common image formats
+koutiku/*.png
+koutiku/*.jpg
+koutiku/*.jpeg
+koutiku/*.webp
+koutiku/**/*.png
+koutiku/**/*.jpg
+koutiku/**/*.jpeg
+koutiku/**/*.webp
+!koutiku/readme.md
