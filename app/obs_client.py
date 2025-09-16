@@ -29,6 +29,42 @@ class ObsClient:
             except Exception:
                 pass
 
+    # --- Scenes ---
+    def list_scenes(self) -> list[str]:
+        """Return a list of scene names."""
+        with self._lock:
+            res = self._ws.call(requests.GetSceneList())
+        scenes = res.getScenes() if hasattr(res, "getScenes") else []  # type: ignore[attr-defined]
+        out: list[str] = []
+        for s in scenes:
+            try:
+                name = s.get("name") or s.get("sceneName")  # type: ignore[index]
+                if isinstance(name, str):
+                    out.append(name)
+            except Exception:
+                continue
+        return out
+
+    def set_current_scene(self, scene_name: str) -> None:
+        with self._lock:
+            self._ws.call(requests.SetCurrentScene(scene_name))
+
+    # --- Sources ---
+    def list_sources(self) -> list[str]:
+        """Return a list of source names (OBS v4 API)."""
+        with self._lock:
+            res = self._ws.call(requests.GetSourcesList())
+        sources = res.getSources() if hasattr(res, "getSources") else []  # type: ignore[attr-defined]
+        out: list[str] = []
+        for s in sources:
+            try:
+                name = s.get("name")  # type: ignore[index]
+                if isinstance(name, str):
+                    out.append(name)
+            except Exception:
+                continue
+        return out
+
     # --- Recording ---
     def start_recording(self) -> None:
         with self._lock:

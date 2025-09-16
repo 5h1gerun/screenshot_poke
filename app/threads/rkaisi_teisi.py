@@ -20,13 +20,14 @@ class RkaisiTeisiThread(threading.Thread):
 
     MATCH_THRESHOLD = 0.4
 
-    def __init__(self, obs: ObsClient, base_dir: str, logger: Optional[UiLogger] = None) -> None:
+    def __init__(self, obs: ObsClient, base_dir: str, logger: Optional[UiLogger] = None, source_name: str = "Capture1") -> None:
         super().__init__(daemon=True)
         self._obs = obs
         self._base = base_dir
         self._log = logger or UiLogger()
         self._stop = threading.Event()
         self._recording = False
+        self._source = source_name
 
         # Paths
         self._scene_path = os.path.join(self._base, "scene2.png")
@@ -43,25 +44,25 @@ class RkaisiTeisiThread(threading.Thread):
         self._stop.set()
 
     def run(self) -> None:
-        self._log.log("[RkaisiTeisi] Thread started")
+        self._log.log("[録開始/停止] スレッド開始")
         try:
             while not self._stop.is_set():
                 self._loop()
         except Exception as e:
-            self._log.log(f"[RkaisiTeisi] Error: {e}")
+            self._log.log(f"[録開始/停止] エラー: {e}")
         finally:
             if self._recording:
-                self._log.log("[RkaisiTeisi] Stopping recording on exit")
+                self._log.log("[録開始/停止] 終了時に録画を停止します")
                 try:
                     self._obs.stop_recording()
                 except Exception:
                     pass
-            self._log.log("[RkaisiTeisi] Thread stopped")
+            self._log.log("[録開始/停止] スレッド停止")
 
     # --- internals ---
     def _loop(self) -> None:
         # Screenshot and crop
-        self._obs.take_screenshot("Capture1", self._scene_path)
+        self._obs.take_screenshot(self._source, self._scene_path)
         img = cv2.imread(self._scene_path)
         if img is None:
             time.sleep(0.5)
@@ -75,19 +76,19 @@ class RkaisiTeisiThread(threading.Thread):
         masu_tpl = cv2.imread(self._masu1_tpl)
         mark_tpl = cv2.imread(self._mark_tpl)
         if masu_tpl is None or mark_tpl is None:
-            self._log.log("[RkaisiTeisi] Templates not found; waiting")
+            self._log.log("[録開始/停止] テンプレートが見つからないため待機")
             time.sleep(1)
             return
 
         if (not self._recording) and match_template(masu1_crop_img, masu_tpl, self.MATCH_THRESHOLD, grayscale=False):
-            self._log.log("[RkaisiTeisi] Detected 'masu1' -> start recording")
+            self._log.log("[録開始/停止] 'masu1' 検出 → 録画開始")
             self._obs.start_recording()
             self._recording = True
             time.sleep(1)
             return
 
         if self._recording and match_template(mark_crop_img, mark_tpl, self.MATCH_THRESHOLD, grayscale=False):
-            self._log.log("[RkaisiTeisi] Detected 'mark' -> stop recording")
+            self._log.log("[録開始/停止] 'mark' 検出 → 録画停止")
             self._obs.stop_recording()
             self._recording = False
             time.sleep(0.5)
