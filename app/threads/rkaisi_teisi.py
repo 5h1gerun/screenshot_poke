@@ -65,7 +65,8 @@ class RkaisiTeisiThread(threading.Thread):
         self._obs.take_screenshot(self._source, self._scene_path)
         img = cv2.imread(self._scene_path)
         if img is None:
-            time.sleep(0.5)
+            if self._stop.wait(0.5):
+                return
             return
 
         masu1_crop_img = crop_image_by_rect(img, self._masu1_rect)
@@ -77,19 +78,22 @@ class RkaisiTeisiThread(threading.Thread):
         mark_tpl = cv2.imread(self._mark_tpl)
         if masu_tpl is None or mark_tpl is None:
             self._log.log("[録開始/停止] テンプレートが見つからないため待機")
-            time.sleep(1)
+            if self._stop.wait(1):
+                return
             return
 
         if (not self._recording) and match_template(masu1_crop_img, masu_tpl, self.MATCH_THRESHOLD, grayscale=False):
             self._log.log("[録開始/停止] 'masu1' 検出 → 録画開始")
             self._obs.start_recording()
             self._recording = True
-            time.sleep(300)
+            if self._stop.wait(300):
+                return
             return
 
         if self._recording and match_template(mark_crop_img, mark_tpl, self.MATCH_THRESHOLD, grayscale=False):
             self._log.log("[録開始/停止] 'mark' 検出 → 録画停止")
             self._obs.stop_recording()
             self._recording = False
-            time.sleep(0.5)
+            if self._stop.wait(0.5):
+                return
 

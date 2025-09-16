@@ -42,7 +42,7 @@ class SyouhaiThread(threading.Thread):
 
         self._counts = {"win": 0, "lose": 0, "disconnect": 0}
         self._text_source = "sensekiText1"
-        self._threshold = 0.3
+        self._threshold = 0.2
 
     def stop(self) -> None:
         self._stop.set()
@@ -63,7 +63,8 @@ class SyouhaiThread(threading.Thread):
         scene = cv2.imread(self._scene_path)
         if scene is None:
             self._log.log("[勝敗検出] スクリーンショットの読み込みに失敗")
-            time.sleep(0.5)
+            if self._stop.wait(0.5):
+                return
             return
 
         detected_any = False
@@ -87,6 +88,8 @@ class SyouhaiThread(threading.Thread):
                 jp = {"win": "勝ち", "lose": "負け", "disconnect": "回線切断"}.get(name, name)
                 self._log.log(f"[勝敗検出] {jp} を検出 → {self._counts[name]}")
                 detected_any = True
+                if self._stop.wait(10):
+                    return
 
         if detected_any:
             text = f"Win: {self._counts['win']} - Lose: {self._counts['lose']} - DC: {self._counts['disconnect']}"
@@ -95,5 +98,6 @@ class SyouhaiThread(threading.Thread):
                 self._log.log(f"[勝敗検出] テキストを更新: {text}")
             except Exception as e:
                 self._log.log(f"[勝敗検出] テキスト更新に失敗: {e}")
-            time.sleep(1.0)
+            if self._stop.wait(1.0):
+                return
 

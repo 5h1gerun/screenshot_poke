@@ -57,6 +57,8 @@ class App(ctk.CTk):
         self.scene_opt: ctk.CTkOptionMenu
         self.source_opt: ctk.CTkOptionMenu
         self._gallery_search_var = tk.StringVar(value="")
+        # Keep a handle to the search entry to detach textvariable on rebuild
+        self._gallery_search_entry: Optional[ctk.CTkEntry] = None
         self._gallery_tags_map: Dict[str, List[str]] = {}
         # Gallery state
         self._thumb_refs: list[ctk.CTkImage] = []
@@ -64,6 +66,8 @@ class App(ctk.CTk):
         self._gallery_after_id: Optional[str] = None
         # Live search debounce timer id
         self._search_after_id: Optional[str] = None
+        # Search suggestions frame (created in gallery UI)
+        self._search_sugg_frame: Optional[ctk.CTkFrame] = None
         # Live tag edit debounce ids per filename
         self._tag_edit_after_ids: Dict[str, str] = {}
         # Async thumbnail loader
@@ -73,6 +77,11 @@ class App(ctk.CTk):
         self._gallery_load_token: Optional[int] = None
 
         self._build_ui()
+        # Graceful shutdown on window close
+        try:
+            self.protocol("WM_DELETE_WINDOW", self._on_close)
+        except Exception:
+            pass
 
     # --- UI ---
     def _build_ui(self) -> None:
@@ -211,9 +220,117 @@ class App(ctk.CTk):
             pass
         try:
             # Debounce frequent typing to avoid excessive reloads
+            # Update suggestions immediately, then reload
+            self._update_search_suggestions()
             self._search_after_id = self.after(250, self._reload_gallery)
         except Exception:
             self._search_after_id = None
+
+    # --- search helpers ---
+    def _tokenize_search(self, text: str) -> List[str]:
+        # Split on spaces, commas, Japanese commas and spaces, semicolons
+        if not text:
+            return []
+        try:
+            normalized = text.replace("\u3000", " ")  # full-width space to half-width
+            parts = re.split(r"[\s,、，;；]+", normalized)
+            return [p for p in parts if p]
+        except Exception:
+            return [text.strip()] if text.strip() else []
+
+    def _is_tag_token(self, token: str) -> bool:
+        try:
+            return token.startswith("tag:") or token.startswith("タグ:")
+        except Exception:
+            return False
+
+    def _update_search_suggestions(self) -> None:
+        # Build suggestions for the search box based on current input
+        frame = getattr(self, "_search_sugg_frame", None)
+        if frame is None or not getattr(frame, "winfo_exists", lambda: False)():
+            return
+        # Clear
+        try:
+            for w in list(frame.winfo_children()):
+                w.destroy()
+        except Exception:
+            pass
+
+        query = self._gallery_search_var.get() or ""
+        tokens = self._tokenize_search(query)
+        # Determine partial (last token being typed)
+        partial = ""
+        had_sep_end = False
+        try:
+            had_sep_end = re.search(r"[\s,、，;；]+$", (query or "").replace("\u3000", " ")) is not None
+        except Exception:
+            had_sep_end = False
+        if not had_sep_end and tokens:
+            partial = tokens[-1]
+
+        # Build candidate tag list
+        all_tags = self._all_existing_tags()
+        # If user typed tag:prefix (or タグ:prefix), filter on the part after colon
+        prefix = partial
+        tag_mode = False
+        if self._is_tag_token(partial):
+            tag_mode = True
+            try:
+                prefix = partial.split(":", 1)[1]
+            except Exception:
+                prefix = ""
+
+        pool = all_tags
+        if prefix:
+            pool = [t for t in pool if t.lower().startswith(prefix.lower())]
+        pool = pool[:8]
+        if not pool:
+            return
+
+        def apply(tag: str):
+            cur = self._gallery_search_var.get() or ""
+            if not cur:
+                new = f"tag:{tag}"
+            else:
+                if had_sep_end:
+                    new = cur + (" " if not cur.endswith(" ") else "") + f"tag:{tag}"
+                else:
+                    # replace the last partial token
+                    parts = self._tokenize_search(cur)
+                    if parts:
+                        parts[-1] = f"tag:{tag}"
+                        new = " ".join(parts)
+                    else:
+                        new = f"tag:{tag}"
+            self._gallery_search_var.set(new)
+            # Refresh suggestions and gallery
+            self._update_search_suggestions()
+            self._on_search_changed()
+
+        # Render suggestion buttons
+        for i, t in enumerate(pool):
+            try:
+                b = ctk.CTkButton(frame, text=f"tag:{t}", width=1, height=24, command=lambda tag=t: apply(tag))
+                b.grid(row=0, column=i, padx=(8 if i == 0 else 6, 0), pady=(0, 6))
+            except Exception:
+                pass
+
+    def _parse_tags_fixed(self, text: str) -> List[str]:
+        """Parse multiple tags separated by spaces/commas (ASCII or Japanese)."""
+        try:
+            normalized = (text or "").replace("\u3000", " ").strip()
+            parts = re.split(r"[\s,、，;；]+", normalized)
+        except Exception:
+            parts = [(text or "").strip()]
+        result: List[str] = []
+        seen = set()
+        for p in parts:
+            t = (p or "").strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            result.append(t)
+        return result
 
     def _browse_base_dir(self) -> None:
         path = fd.askdirectory(title="Choose base directory")
@@ -225,6 +342,43 @@ class App(ctk.CTk):
         try:
             self.log_text.insert("end", message + "\n")
             self.log_text.see("end")
+        except Exception:
+            pass
+
+    def _on_close(self) -> None:
+        # Stop background threads and timers safely
+        try:
+            self._stop_threads()
+        except Exception:
+            pass
+        # Cancel scheduled callbacks
+        try:
+            if getattr(self, "_search_after_id", None):
+                try:
+                    self.after_cancel(self._search_after_id)
+                except Exception:
+                    pass
+                self._search_after_id = None
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_gallery_after_id", None):
+                try:
+                    self.after_cancel(self._gallery_after_id)
+                except Exception:
+                    pass
+                self._gallery_after_id = None
+        except Exception:
+            pass
+        # Shutdown thumbnail executor
+        try:
+            if getattr(self, "_thumb_executor", None):
+                self._thumb_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        # Destroy window
+        try:
+            self.destroy()
         except Exception:
             pass
 
@@ -274,6 +428,49 @@ class App(ctk.CTk):
                 log_content = self.log_text.get("1.0", "end-1c")
             except Exception:
                 pass
+
+        # Proactively cancel pending timers that might reference destroyed widgets
+        try:
+            if self._search_after_id is not None:
+                try:
+                    self.after_cancel(self._search_after_id)
+                except Exception:
+                    pass
+                self._search_after_id = None
+        except Exception:
+            pass
+        try:
+            if self._gallery_after_id is not None:
+                try:
+                    self.after_cancel(self._gallery_after_id)
+                except Exception:
+                    pass
+                self._gallery_after_id = None
+        except Exception:
+            pass
+
+        # Detach textvariable from search entry to avoid stale trace callbacks
+        try:
+            if getattr(self, "_gallery_search_entry", None) is not None:
+                entry = self._gallery_search_entry
+                try:
+                    if hasattr(entry, "winfo_exists") and entry.winfo_exists():
+                        entry.configure(textvariable=None)
+                except Exception:
+                    pass
+                self._gallery_search_entry = None
+        except Exception:
+            pass
+
+        # Replace the search StringVar to drop any traces bound by old widgets
+        try:
+            _cur_search = self._gallery_search_var.get() if self._gallery_search_var is not None else ""
+        except Exception:
+            _cur_search = ""
+        try:
+            self._gallery_search_var = tk.StringVar(value=_cur_search)
+        except Exception:
+            pass
 
         for child in self.winfo_children():
             try:
@@ -524,13 +721,19 @@ class App(ctk.CTk):
         ctk.CTkLabel(ctrl, text="検索:").grid(row=1, column=0, sticky="e", padx=(8, 6))
         search_entry = ctk.CTkEntry(ctrl, textvariable=self._gallery_search_var)
         search_entry.grid(row=1, column=1, sticky="we", pady=6)
+        # Store reference so we can detach textvariable safely on rebuild
+        try:
+            self._gallery_search_entry = search_entry
+        except Exception:
+            pass
         try:
             # Live filter: reload gallery as the user types (debounced)
             search_entry.bind("<KeyRelease>", self._on_search_changed)
         except Exception:
             pass
-        ctk.CTkButton(ctrl, text="検索", width=80, command=self._reload_gallery).grid(row=1, column=2, padx=6)
-        ctk.CTkButton(ctrl, text="クリア", width=80, command=lambda: (self._gallery_search_var.set(""), self._reload_gallery())).grid(row=1, column=3, padx=(6, 8))
+        # Suggestions holder under the search entry (replaces search/clear buttons)
+        self._search_sugg_frame = ctk.CTkFrame(ctrl, fg_color="transparent")
+        self._search_sugg_frame.grid(row=2, column=0, columnspan=4, sticky="we", padx=(8, 8))
 
         # Scrollable grid for thumbnails
         self._gallery_scroll = ctk.CTkScrollableFrame(parent, corner_radius=8)
@@ -588,9 +791,11 @@ class App(ctk.CTk):
 
         # Load tags and filter by search query
         self._load_gallery_tags()
+        # Keep a copy before filtering for robust fallback
+        items_all = list(items)
         query = (self._gallery_search_var.get() or "").strip()
         tokens = [t for t in query.replace("　", " ").split(" ") if t]
-        if tokens:
+        if False and tokens:
             def _match(path: str) -> bool:
                 name = os.path.basename(path)
                 tags = set(self._gallery_tags_map.get(name, []))
@@ -604,6 +809,54 @@ class App(ctk.CTk):
                             return True
                 return False
             items = [(p, mt) for (p, mt) in items if _match(p)]
+        # Additional robust filtering using improved tokenizer (supports Japanese spaces/commas)
+        robust_tokens = self._tokenize_search(query)
+        if False and robust_tokens:
+            def _robust_match(path: str) -> bool:
+                name = os.path.basename(path)
+                tags = set(t.strip() for t in self._gallery_tags_map.get(name, []) if t)
+                for tok in robust_tokens:
+                    if self._is_tag_token(tok):
+                        key = tok.split(":", 1)[1].strip()
+                        if key and key in tags:
+                            return True
+                    else:
+                        if tok.lower() in name.lower():
+                            return True
+                return False
+            items = [(p, mt) for (p, mt) in items_all if _robust_match(p)]
+
+        # Final filtering using effective tokens (ignore empty tag: tokens)
+        tokens_eff = []
+        try:
+            tokens_tmp = self._tokenize_search(query)
+        except Exception:
+            tokens_tmp = []
+        for t in tokens_tmp:
+            if self._is_tag_token(t):
+                try:
+                    key = t.split(":", 1)[1].strip()
+                except Exception:
+                    key = ""
+                if key:
+                    tokens_eff.append(f"tag:{key}")
+            else:
+                if (t or "").strip():
+                    tokens_eff.append(t.strip())
+        if tokens_eff:
+            def _final_match(path: str) -> bool:
+                name = os.path.basename(path)
+                tags = set(s.strip() for s in self._gallery_tags_map.get(name, []) if s)
+                for tok in tokens_eff:
+                    if self._is_tag_token(tok):
+                        k = tok.split(":", 1)[1].strip()
+                        if k and k in tags:
+                            return True
+                    else:
+                        if tok.lower() in name.lower():
+                            return True
+                return False
+            items = [(p, mt) for (p, mt) in items if _final_match(p)]
 
         # Sort by mtime (desc) using prefetched metadata
         items.sort(key=lambda x: x[1], reverse=True)
@@ -798,7 +1051,7 @@ class App(ctk.CTk):
 
                 def _commit():
                     text = tag_var.get()
-                    tags = self._parse_tags(text)
+                    tags = self._parse_tags_fixed(text)
                     try:
                         if tags:
                             self._gallery_tags_map[fname] = tags
