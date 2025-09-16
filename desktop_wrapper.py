@@ -46,19 +46,18 @@ def wait_server(url: str, timeout: float = 15.0, interval: float = 0.2) -> bool:
 
 def main():
     # ポート確保
+    host = os.environ.get("TEXTUAL_WEB_HOST", "127.0.0.1")
     port = int(os.environ.get("TEXTUAL_WEB_PORT", find_free_port() or 8765))
-    url = f"http://127.0.0.1:{port}/"
+    url = f"http://{host}:{port}/"
 
-    # Textual Web をサブプロセスで起動
     cmd = [
         sys.executable,
-        "-m",
-        "textual",
-        "run",
+        "textual_app.py",
         "--web",
+        "--host",
+        host,
         "--port",
         str(port),
-        "textual_app.py",
     ]
 
     print("Launching Textual Web:", " ".join(cmd))

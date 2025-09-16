@@ -3,8 +3,6 @@ import time
 import cv2
 import numpy as np
 import base64
-import pytesseract
-import unidecode
 import threading
 import datetime
 import tkinter as tk
@@ -12,7 +10,11 @@ import tkinter.filedialog as fd
 import tkinter.messagebox as mb
 import tkinter.scrolledtext as st
 
-from PIL import Image, ImageEnhance, ImageFilter
+"""
+combined_app.py
+
+OCR 関連の残骸を削除し、保存ファイル名を「日付のみ」に統一。
+"""
 from obswebsocket import obsws, requests
 from tkinter import ttk
 
@@ -51,7 +53,7 @@ def thread_safe_log(func):
 # double_battle.py 相当
 # ---------------------------------------------------
 class DoubleBattleThread(threading.Thread):
-    def __init__(self, ws, ws_lock, base_dir, tesseract_path, log_text=None, logger=None):
+    def __init__(self, ws, ws_lock, base_dir, log_text=None, logger=None):
         super().__init__()
         self.ws = ws
         self.ws_lock = ws_lock  # 追加: OBS呼び出し時のロック
@@ -62,8 +64,6 @@ class DoubleBattleThread(threading.Thread):
         self.stop_flag = False
         self.log_text = log_text
         self.logger = logger
-
-        pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
         self.scene_image_path = os.path.join(self.screenshot_dir, 'scene.png')
         self.masu_image_path = os.path.join(self.screenshot_dir, 'masu.png')
@@ -133,20 +133,12 @@ class DoubleBattleThread(threading.Thread):
             haisinyou_image_path = os.path.join(self.haisin_dir, 'haisinyou.png')
             cv2.imwrite(haisinyou_image_path, scene_cropped_img)
 
-            # ----------------------------
-            # OCR 処理を日時に置換
-            # ----------------------------
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.log(f"[DoubleBattle] Timestamp: {timestamp}")
+            # 日付+時間でファイル名を作成（例: 20250916_123045.png）
+            dt_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.log(f"[DoubleBattle] DateTime: {dt_str}")
 
-            sanitized_text = timestamp  # OCR ではなく日時を使用
-            counter = 1
-            new_screenshot_filename = f"{sanitized_text}.png"
+            new_screenshot_filename = f"{dt_str}.png"
             new_screenshot_path = os.path.join(self.hozon_dir, new_screenshot_filename)
-            while os.path.exists(new_screenshot_path):
-                new_screenshot_filename = f"{sanitized_text}_{counter}.png"
-                new_screenshot_path = os.path.join(self.hozon_dir, new_screenshot_filename)
-                counter += 1
             cv2.imwrite(new_screenshot_path, scene_cropped_img)
             self.log(f"[DoubleBattle] {new_screenshot_path} として保存")
 
@@ -226,33 +218,7 @@ class DoubleBattleThread(threading.Thread):
         _, max_val, _, _ = cv2.minMaxLoc(result)
         return (max_val > 0.6)
 
-    # OCR メソッドは未使用だが、一応残しておく
-    def ocr(self, image_path):
-        image_cv = cv2.imread(image_path)
-        if image_cv is None:
-            raise FileNotFoundError(f"画像が見つかりません: {image_path}")
-        image_rgb = cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB)
-        image_pil = Image.fromarray(image_rgb)
-        width, height = image_pil.size
-        cropped_image = image_pil.crop((0, 0, width, 70))
-        gray_image = cropped_image.convert('L')
-        enhancer = ImageEnhance.Contrast(gray_image)
-        enhanced_image = enhancer.enhance(2).filter(ImageFilter.SHARPEN)
-        filtered_image = enhanced_image.filter(ImageFilter.MedianFilter(size=3))
-        binary_image = filtered_image.point(lambda p: 255 if p > 130 else 0)
-        recognized_text = pytesseract.image_to_string(
-            binary_image,
-            lang="jpn+eng",
-            config="--psm 6 --oem 3"
-        )
-        return recognized_text.strip()
-
-    def sanitize_filename(self, name):
-        invalid_chars = '<>:"/\\|?*'
-        for char in invalid_chars:
-            name = name.replace(char, '_')
-        safe_name = name.encode('utf-8', 'ignore').decode('utf-8')
-        return unidecode.unidecode(safe_name)
+    # 余分な OCR 用ヘルパーは削除済み
 
 # ---------------------------------------------------
 # rkaisi_teisi.py 相当
@@ -358,7 +324,6 @@ class RkaisiTeisiThread(threading.Thread):
         result = cv2.matchTemplate(cropped_img, template_img, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, _ = cv2.minMaxLoc(result)
         return max_val >= self.MATCH_THRESHOLD
-
 
 # ---------------------------------------------------
 # syouhai.py 相当
@@ -480,7 +445,6 @@ class SyouhaiThread(threading.Thread):
         except Exception as e:
             self.log(f"[Syouhai] update_obs_text失敗: {e}")
 
-
 # ---------------------------------------------------
 # メインGUI
 # ---------------------------------------------------
@@ -526,28 +490,22 @@ class App(tk.Tk):
         self.port_entry.insert(0, os.getenv("OBS_PORT", "4444"))
         self.port_entry.grid(row=0, column=3, padx=5, pady=3)
 
-        ttk.Label(obs_frame, text="Password:").grid(row=1, column=0, sticky=tk.E, padx=5, pady=3)
+        ttk.Label(obs_frame, text="Password:").grid(row=0, column=0, sticky=tk.E, padx=5, pady=3)
         self.pass_entry = ttk.Entry(obs_frame, show="*", width=15)
         self.pass_entry.insert(0, os.getenv("OBS_PASSWORD", ""))
-        self.pass_entry.grid(row=1, column=1, padx=5, pady=3, sticky=tk.W)
+        self.pass_entry.grid(row=0, column=1, padx=5, pady=3, sticky=tk.W)
 
         # -------------------------------------------------
-        # 中段: Tesseract & ベースディレクトリ設定
+        # 中段: ベースディレクトリ設定
         # -------------------------------------------------
         path_frame = ttk.Labelframe(main_frame, text="パス設定", padding=10)
         path_frame.pack(fill=tk.X, pady=5)
-
-        ttk.Label(path_frame, text="Tesseract.exe:").grid(row=0, column=0, sticky=tk.E, padx=5, pady=3)
-        self.tess_entry = ttk.Entry(path_frame, width=40)
-        self.tess_entry.insert(0, os.getenv("TESSERACT_PATH", r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"))
-        self.tess_entry.grid(row=0, column=1, padx=5, pady=3)
-        ttk.Button(path_frame, text="参照", command=self.browse_tesseract).grid(row=0, column=2, padx=5, pady=3)
 
         ttk.Label(path_frame, text="ベースディレクトリ:").grid(row=1, column=0, sticky=tk.E, padx=5, pady=3)
         self.base_dir_entry = ttk.Entry(path_frame, width=40)
         self.base_dir_entry.insert(0, os.getenv("BASE_DIR", os.getcwd()))
         self.base_dir_entry.grid(row=1, column=1, padx=5, pady=3)
-        ttk.Button(path_frame, text="参照", command=self.browse_base_dir).grid(row=1, column=2, padx=5, pady=3)
+        ttk.Button(path_frame, text="参照", command=self.browse_base_dir).grid(row=0, column=2, padx=5, pady=3)
 
         # -------------------------------------------------
         # スクリプト選択
@@ -581,15 +539,6 @@ class App(tk.Tk):
         self.log_text = st.ScrolledText(log_frame, wrap=tk.WORD, height=8)
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
-    def browse_tesseract(self):
-        path = fd.askopenfilename(
-            title="Tesseract実行ファイルを選択",
-            filetypes=[("実行ファイル", "*.exe"), ("すべてのファイル", "*.*")]
-        )
-        if path:
-            self.tess_entry.delete(0, tk.END)
-            self.tess_entry.insert(0, path)
-
     def browse_base_dir(self):
         path = fd.askdirectory(title="ベースディレクトリ選択")
         if path:
@@ -600,7 +549,6 @@ class App(tk.Tk):
         host = self.host_entry.get()
         port = int(self.port_entry.get())
         password = self.pass_entry.get()
-        tesseract_path = self.tess_entry.get()
         base_dir = self.base_dir_entry.get()
 
         # 既に接続済みなら切断して再接続
@@ -624,7 +572,7 @@ class App(tk.Tk):
 
         # スレッド開始
         if self.chk_double_var.get():
-            self.thread_double = DoubleBattleThread(self.ws, self.ws_lock, base_dir, tesseract_path, self.log_text)
+            self.thread_double = DoubleBattleThread(self.ws, self.ws_lock, base_dir, self.log_text)
             self.thread_double.start()
         if self.chk_rkaisi_var.get():
             handantmp_dir = os.path.join(base_dir, 'handantmp')
