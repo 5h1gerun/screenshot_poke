@@ -42,7 +42,7 @@ class SyouhaiThread(threading.Thread):
 
         self._counts = {"win": 0, "lose": 0, "disconnect": 0}
         self._text_source = "sensekiText1"
-        self._threshold = 0.3
+        self._threshold = 0.2
 
     def stop(self) -> None:
         self._stop.set()
