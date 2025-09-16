@@ -87,7 +87,8 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(obs_frame, text="Base Directory").grid(row=4, column=0, sticky="e", padx=8, pady=4)
         self.base_dir_entry = ctk.CTkEntry(obs_frame, width=260)
-        self.base_dir_entry.insert(0, os.getenv("BASE_DIR", os.getcwd()))
+        # Resolve BASE_DIR relative to the app/.env location so it stays relocatable
+        self.base_dir_entry.insert(0, self._resolve_base_dir_default())
         self.base_dir_entry.grid(row=4, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="Browse", command=self._browse_base_dir).grid(row=4, column=2, padx=8, pady=4)
 
@@ -95,9 +96,9 @@ class App(ctk.CTk):
         script_frame = ctk.CTkFrame(sidebar, corner_radius=10)
         script_frame.grid(row=1, column=0, sticky="we", padx=8, pady=6)
         ctk.CTkLabel(script_frame, text="Scripts", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=8, pady=(8, 4))
-        ctk.CTkCheckBox(script_frame, text="double_battle", variable=self.chk_double_var).pack(anchor="w", padx=8, pady=2)
-        ctk.CTkCheckBox(script_frame, text="rkaisi_teisi", variable=self.chk_rkaisi_var).pack(anchor="w", padx=8, pady=2)
-        ctk.CTkCheckBox(script_frame, text="syouhai", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=(2, 8))
+        ctk.CTkCheckBox(script_frame, text="構築のスクリーンショット", variable=self.chk_double_var).pack(anchor="w", padx=8, pady=2)
+        ctk.CTkCheckBox(script_frame, text="自動録画開始・停止", variable=self.chk_rkaisi_var).pack(anchor="w", padx=8, pady=2)
+        ctk.CTkCheckBox(script_frame, text="戦績を自動更新", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=(2, 8))
 
         # Controls
         control_frame = ctk.CTkFrame(sidebar, corner_radius=10)
@@ -324,14 +325,53 @@ class App(ctk.CTk):
             pass
         return str(Path.cwd() / ".env")
 
+    def _resolve_base_dir_default(self) -> str:
+        """Resolve BASE_DIR from env relative to the app/.env location.
+
+        - If BASE_DIR is unset, treat as '.' (repo root next to combined_app.py).
+        - If BASE_DIR is relative, resolve it relative to the .env directory.
+        - If BASE_DIR is absolute, normalize it.
+        """
+        raw = os.getenv("BASE_DIR", ".").strip()
+        try:
+            env_dir = Path(self._get_dotenv_path()).resolve().parent
+        except Exception:
+            env_dir = Path.cwd()
+        try:
+            p = Path(raw)
+            if not p.is_absolute():
+                p = (env_dir / p).resolve()
+            else:
+                p = p.resolve()
+            return str(p)
+        except Exception:
+            return str(env_dir)
+
     def _save_settings(self) -> None:
         dotenv_path = self._get_dotenv_path()
         # Collect values
+        # Normalize BASE_DIR for saving: store as relative to .env dir if possible
+        base_dir_raw = self.base_dir_entry.get().strip()
+        try:
+            env_dir = Path(self._get_dotenv_path()).resolve().parent
+        except Exception:
+            env_dir = Path.cwd()
+        try:
+            resolved = Path(base_dir_raw).resolve()
+            rel = resolved.relative_to(env_dir)
+            base_dir_to_save = "." if str(rel) == "." else str(rel)
+        except Exception:
+            # Outside repo or cannot resolve -> save absolute
+            try:
+                base_dir_to_save = str(Path(base_dir_raw).resolve())
+            except Exception:
+                base_dir_to_save = base_dir_raw
+
         cfg = {
             "OBS_HOST": self.host_entry.get().strip(),
             "OBS_PORT": str(self.port_entry.get()).strip(),
             "OBS_PASSWORD": self.pass_entry.get(),
-            "BASE_DIR": self.base_dir_entry.get().strip(),
+            "BASE_DIR": base_dir_to_save,
             "APP_APPEARANCE": self._appearance,
             "APP_THEME": self._accent_theme,
             "ENABLE_DOUBLE": "true" if self.chk_double_var.get() else "false",
