@@ -87,6 +87,7 @@ class SyouhaiThread(threading.Thread):
                 jp = {"win": "勝ち", "lose": "負け", "disconnect": "回線切断"}.get(name, name)
                 self._log.log(f"[勝敗検出] {jp} を検出 → {self._counts[name]}")
                 detected_any = True
+                time.sleep(10)
 
         if detected_any:
             text = f"Win: {self._counts['win']} - Lose: {self._counts['lose']} - DC: {self._counts['disconnect']}"
