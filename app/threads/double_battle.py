@@ -25,12 +25,14 @@ class DoubleBattleThread(threading.Thread):
         obs: ObsClient,
         base_dir: str,
         logger: Optional[UiLogger] = None,
+        source_name: str = "Capture1",
     ) -> None:
         super().__init__(daemon=True)
         self._obs = obs
         self._base_dir = base_dir
         self._log = logger or UiLogger()
         self._stop = threading.Event()
+        self._source = source_name
 
         # Paths
         self._handan = os.path.join(base_dir, "handantmp")
@@ -58,15 +60,15 @@ class DoubleBattleThread(threading.Thread):
 
     # --- threading.Thread ---
     def run(self) -> None:
-        self._log.log("[DoubleBattle] Thread started")
+        self._log.log("[ダブルバトル] スレッド開始")
         try:
             while not self._stop.is_set():
                 self._iteration()
                 time.sleep(2)
         except Exception as e:
-            self._log.log(f"[DoubleBattle] Error: {e}")
+            self._log.log(f"[ダブルバトル] エラー: {e}")
         finally:
-            self._log.log("[DoubleBattle] Thread stopped")
+            self._log.log("[ダブルバトル] スレッド停止")
 
     # --- internals ---
     def _iteration(self) -> None:
@@ -75,9 +77,9 @@ class DoubleBattleThread(threading.Thread):
             if self._stop.is_set():
                 return
             try:
-                self._obs.take_screenshot("Capture1", self._scene_path)
+                self._obs.take_screenshot(self._source, self._scene_path)
             except Exception as e:
-                self._log.log(f"[DoubleBattle] screenshot failed: {e}")
+                self._log.log(f"[ダブルバトル] スクリーンショット取得に失敗: {e}")
             if os.path.exists(self._scene_path):
                 break
             time.sleep(0.5)
@@ -89,7 +91,7 @@ class DoubleBattleThread(threading.Thread):
         crop = crop_image_by_rect(scene_img, self._screenshot_rect)
         cropped_path = os.path.join(self._handan, "screenshot_cropped.png")
         cv2.imwrite(cropped_path, crop)
-        self._log.log("[DoubleBattle] Wrote screenshot_cropped.png")
+        self._log.log("[ダブルバトル] screenshot_cropped.png を出力")
 
         # 3) Detect presence of 'masu' template in its area
         masu_img = cv2.imread(self._masu_path)
@@ -100,7 +102,7 @@ class DoubleBattleThread(threading.Thread):
         cv2.imwrite(masu_area_path, masu_area)
 
         if match_template(masu_area, masu_img, threshold=0.6, grayscale=False):
-            self._log.log("[DoubleBattle] Detected 'masu' template")
+            self._log.log("[ダブルバトル] 'masu' テンプレートを検出")
 
             # Keep recent crop for broadcasting
             cv2.imwrite(self._haisinyou_path, crop)
@@ -109,20 +111,20 @@ class DoubleBattleThread(threading.Thread):
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             dst = os.path.join(self._koutiku, f"{ts}.png")
             cv2.imwrite(dst, crop)
-            self._log.log(f"[DoubleBattle] Saved {dst}")
+            self._log.log(f"[ダブルバトル] 保存しました: {dst}")
 
             # While masu continues to appear, attempt to match reference tiles
             while match_template(masu_area, masu_img, threshold=0.6, grayscale=False):
                 if self._stop.is_set():
                     return
-                self._obs.take_screenshot("Capture1", self._scene_path)
+                self._obs.take_screenshot(self._source, self._scene_path)
                 scene = cv2.imread(self._scene_path)
                 masu_area = crop_image_by_rect(scene, self._masu_rect)
                 cv2.imwrite(masu_area_path, masu_area)
 
                 tag_images = [cv2.imread(p) for p in self._ref_paths]
                 if any(t is None for t in tag_images):
-                    self._log.log("[DoubleBattle] Reference images missing; skip")
+                    self._log.log("[ダブルバトル] 参照画像が見つからないためスキップ")
                     time.sleep(1)
                     continue
 
@@ -148,14 +150,14 @@ class DoubleBattleThread(threading.Thread):
                                 found = True
                                 break
                     if not found:
-                        self._log.log(f"[DoubleBattle] Tag {idx + 1} not found")
+                        self._log.log(f"[ダブルバトル] タグ{idx + 1} が見つかりません")
                         all_ok = False
                         break
 
                 if all_ok and len(matched_new) == 4:
                     combined = cv2.vconcat(matched_new)
                     cv2.imwrite(self._haisinsensyutu_path, combined)
-                    self._log.log(f"[DoubleBattle] Wrote: {self._haisinsensyutu_path}")
+                    self._log.log(f"[ダブルバトル] 抽出画像を書き出し: {self._haisinsensyutu_path}")
 
                 time.sleep(1)
 

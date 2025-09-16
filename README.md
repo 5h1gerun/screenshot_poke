@@ -31,6 +31,10 @@ python combined_app.py
 - OBS 接続情報（host、port、password）
 - ベースディレクトリ（`BASE_DIR`）: ここに `handantmp`、`haisin`、`koutiku` が存在（または生成）されます
  - テーマ設定（外観: System/Light/Dark、アクセント: blue/dark-blue/green）
+ - タブビュー: Log と Gallery
+   - Gallery: `koutiku` 配下の画像をサムネイルで一覧表示します（最新順・最大100件）。
+     - サムネイルをクリックすると拡大表示（別ウィンドウ）が開きます。
+     - Reload ボタンで即時更新、Auto Refresh で自動更新（既定でON）。
 
 ## ディレクトリ構成
 - `handantmp/`: テンプレート画像および作業中のスクリーンショット
@@ -38,6 +42,10 @@ python combined_app.py
 - `koutiku/`: 後で再利用するための素材保存
 
 `.gitignore` は、`scene*.png`、`screenshot*.png`、`*cropped*.png` などの一時的／生成画像をバージョン管理から除外します。`banme*.jpg` や `masu.png` など必要なテンプレートは保持してください。
+
+### ギャラリー表示のカスタマイズ（任意）
+- `GALLERY_MAX`（既定: `100`）: ギャラリーに表示する最大件数
+- `GALLERY_THUMB`（既定: `240`）: サムネイルの横幅（px）
 
 ## セキュリティ上の注意
 - パスワードや個人情報はソースコードではなく環境変数に保存してください。

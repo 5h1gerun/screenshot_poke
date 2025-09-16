@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
+import concurrent.futures
 import tkinter as tk
 import tkinter.filedialog as fd
 import tkinter.messagebox as mb
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
+
+import json
+import subprocess
+import tkinter.simpledialog as sd
 
 import customtkinter as ctk
+from PIL import Image
 
 from app.obs_client import ObsClient
 from app.threads.double_battle import DoubleBattleThread
@@ -47,6 +54,23 @@ class App(ctk.CTk):
         self.chk_rkaisi_var = tk.BooleanVar(value=self._env_bool("ENABLE_RKAISI", True))
         self.chk_syouhai_var = tk.BooleanVar(value=self._env_bool("ENABLE_SYOUHAI", True))
         self.log_text: ctk.CTkTextbox
+        self.scene_opt: ctk.CTkOptionMenu
+        self.source_opt: ctk.CTkOptionMenu
+        self._gallery_search_var = tk.StringVar(value="")
+        self._gallery_tags_map: Dict[str, List[str]] = {}
+        # Gallery state
+        self._thumb_refs: list[ctk.CTkImage] = []
+        self._auto_refresh_var = tk.BooleanVar(value=True)
+        self._gallery_after_id: Optional[str] = None
+        # Live search debounce timer id
+        self._search_after_id: Optional[str] = None
+        # Live tag edit debounce ids per filename
+        self._tag_edit_after_ids: Dict[str, str] = {}
+        # Async thumbnail loader
+        self._thumb_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=int(os.getenv("GALLERY_WORKERS", "4") or 4)
+        )
+        self._gallery_load_token: Optional[int] = None
 
         self._build_ui()
 
@@ -54,10 +78,12 @@ class App(ctk.CTk):
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        # Keep the title row compact; let content row expand
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=1)
 
-        title = ctk.CTkLabel(self, text="OBS Screenshot / Template Tool", font=ctk.CTkFont(size=22, weight="bold"))
-        title.grid(row=0, column=0, columnspan=2, sticky="we", padx=16, pady=(12, 0))
+        title = ctk.CTkLabel(self, text="OBS Screenshot / Template Tool", font=ctk.CTkFont(size=18, weight="bold"))
+        title.grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(12, 0))
 
         sidebar = ctk.CTkFrame(self, corner_radius=10)
         sidebar.grid(row=1, column=0, sticky="nsw", padx=(16, 8), pady=12)
@@ -91,6 +117,20 @@ class App(ctk.CTk):
         self.base_dir_entry.insert(0, self._resolve_base_dir_default())
         self.base_dir_entry.grid(row=4, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="Browse", command=self._browse_base_dir).grid(row=4, column=2, padx=8, pady=4)
+
+        # Scene/Source selection
+        ctk.CTkLabel(obs_frame, text="Scene").grid(row=5, column=0, sticky="e", padx=8, pady=4)
+        default_scene = os.getenv("OBS_SCENE", "")
+        self.scene_opt = ctk.CTkOptionMenu(obs_frame, values=[default_scene] if default_scene else [""], width=200)
+        self.scene_opt.set(default_scene)
+        self.scene_opt.grid(row=5, column=1, sticky="w", padx=8, pady=4)
+
+        ctk.CTkLabel(obs_frame, text="Source").grid(row=6, column=0, sticky="e", padx=8, pady=4)
+        default_source = os.getenv("OBS_SOURCE", "Capture1")
+        self.source_opt = ctk.CTkOptionMenu(obs_frame, values=[default_source], width=200)
+        self.source_opt.set(default_source)
+        self.source_opt.grid(row=6, column=1, sticky="w", padx=8, pady=4)
+        ctk.CTkButton(obs_frame, text="更新", command=self._refresh_obs_lists, width=80).grid(row=6, column=2, padx=8, pady=4)
 
         # Scripts
         script_frame = ctk.CTkFrame(sidebar, corner_radius=10)
@@ -131,25 +171,50 @@ class App(ctk.CTk):
         self.theme_opt.set(self._accent_theme)
         self.theme_opt.grid(row=2, column=1, sticky="w", padx=8, pady=(4, 12))
 
-        # Right: log
+        # Right: Tabview with Log / Gallery
         right = ctk.CTkFrame(self, corner_radius=10)
         right.grid(row=1, column=1, sticky="nsew", padx=(8, 16), pady=12)
-        right.grid_rowconfigure(1, weight=1)
+        right.grid_rowconfigure(0, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(right, text="Log", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
-        log_container = ctk.CTkFrame(right)
-        log_container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        tabs = ctk.CTkTabview(right)
+        tabs.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        tab_log = tabs.add("Log")
+        tab_gallery = tabs.add("Gallery")
+
+        # Log tab
+        tab_log.grid_rowconfigure(0, weight=1)
+        tab_log.grid_columnconfigure(0, weight=1)
+        log_container = ctk.CTkFrame(tab_log)
+        log_container.grid(row=0, column=0, sticky="nsew")
         log_container.grid_rowconfigure(0, weight=1)
         log_container.grid_columnconfigure(0, weight=1)
-
         self.log_text = ctk.CTkTextbox(log_container, wrap="word")
         self.log_text.grid(row=0, column=0, sticky="nsew")
         scrollbar = ctk.CTkScrollbar(log_container, command=self.log_text.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
+        # Gallery tab
+        self._build_gallery_ui(tab_gallery)
+        # Initial load
+        self.after(200, self._reload_gallery)
+        # Auto-refresh if enabled
+        self._schedule_gallery_refresh()
+
     # --- callbacks ---
+    def _on_search_changed(self, event=None) -> None:
+        try:
+            if self._search_after_id is not None:
+                self.after_cancel(self._search_after_id)
+        except Exception:
+            pass
+        try:
+            # Debounce frequent typing to avoid excessive reloads
+            self._search_after_id = self.after(250, self._reload_gallery)
+        except Exception:
+            self._search_after_id = None
+
     def _browse_base_dir(self) -> None:
         path = fd.askdirectory(title="Choose base directory")
         if path:
@@ -201,6 +266,8 @@ class App(ctk.CTk):
         chk_double = getattr(self, "chk_double_var", tk.BooleanVar(value=True)).get()
         chk_rkaisi = getattr(self, "chk_rkaisi_var", tk.BooleanVar(value=True)).get()
         chk_syouhai = getattr(self, "chk_syouhai_var", tk.BooleanVar(value=True)).get()
+        scene = getattr(self, "scene_opt", None).get() if getattr(self, "scene_opt", None) else os.getenv("OBS_SCENE", "")
+        source = getattr(self, "source_opt", None).get() if getattr(self, "source_opt", None) else os.getenv("OBS_SOURCE", "Capture1")
         log_content = ""
         if getattr(self, "log_text", None):
             try:
@@ -223,6 +290,14 @@ class App(ctk.CTk):
         self.chk_double_var.set(chk_double)
         self.chk_rkaisi_var.set(chk_rkaisi)
         self.chk_syouhai_var.set(chk_syouhai)
+        # Restore scene/source selections
+        try:
+            self.scene_opt.configure(values=[scene] if scene else [""])
+            self.scene_opt.set(scene)
+            self.source_opt.configure(values=[source] if source else ["Capture1"])
+            self.source_opt.set(source)
+        except Exception:
+            pass
         # Reset theme selections to current state
         try:
             self.appearance_opt.set(self._appearance)
@@ -234,6 +309,12 @@ class App(ctk.CTk):
                 self.log_text.insert("1.0", log_content)
             except Exception:
                 pass
+
+        # After rebuilding, refresh gallery
+        try:
+            self._reload_gallery()
+        except Exception:
+            pass
 
     # --- start/stop ---
     def _start_threads(self) -> None:
@@ -257,27 +338,37 @@ class App(ctk.CTk):
         try:
             self._obs = ObsClient(host, port, password, self._lock)
             self._obs.connect()
-            mb.showinfo("Connected", f"Connected to OBS WebSocket: {host}:{port}")
-            self._append_log("[App] Connected to OBS")
+            mb.showinfo("接続", f"OBS WebSocket に接続しました: {host}:{port}")
+            self._append_log("[アプリ] OBSに接続しました")
             # Persist settings on successful connect
             self._save_settings()
         except Exception as e:
-            mb.showerror("Connection Error", f"Failed to connect to OBS.\n{e}")
-            self._append_log(f"[App] Connection error: {e}")
+            mb.showerror("接続エラー", f"OBS への接続に失敗しました。\n{e}")
+            self._append_log(f"[アプリ] 接続エラー: {e}")
             return
 
         logger = UiLogger(self._append_log, self.log_text)
 
+        # Switch scene if selected
+        try:
+            scene = self.scene_opt.get().strip()
+            if scene:
+                self._obs.set_current_scene(scene)
+                self._append_log(f"[アプリ] シーン切替: {scene}")
+        except Exception:
+            pass
+
+        src = self.source_opt.get().strip() or "Capture1"
         if self.chk_double_var.get():
-            self._th_double = DoubleBattleThread(self._obs, base_dir, logger)
+            self._th_double = DoubleBattleThread(self._obs, base_dir, logger, source_name=src)
             self._th_double.start()
         if self.chk_rkaisi_var.get():
             handantmp = os.path.join(base_dir, "handantmp")
             os.makedirs(handantmp, exist_ok=True)
-            self._th_rkaisi = RkaisiTeisiThread(self._obs, handantmp, logger)
+            self._th_rkaisi = RkaisiTeisiThread(self._obs, handantmp, logger, source_name=src)
             self._th_rkaisi.start()
         if self.chk_syouhai_var.get():
-            self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger)
+            self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger, source_name=src)
             self._th_syouhai.start()
 
     def _stop_threads(self) -> None:
@@ -299,12 +390,12 @@ class App(ctk.CTk):
         if self._obs is not None:
             try:
                 self._obs.disconnect()
-                self._append_log("[App] OBS disconnected")
+                self._append_log("[アプリ] OBSから切断しました")
             except Exception:
                 pass
             self._obs = None
 
-        mb.showinfo("Stopped", "All threads stopped.")
+        mb.showinfo("停止", "すべてのスレッドを停止しました。")
 
     # --- settings persistence ---
     @staticmethod
@@ -377,6 +468,8 @@ class App(ctk.CTk):
             "ENABLE_DOUBLE": "true" if self.chk_double_var.get() else "false",
             "ENABLE_RKAISI": "true" if self.chk_rkaisi_var.get() else "false",
             "ENABLE_SYOUHAI": "true" if self.chk_syouhai_var.get() else "false",
+            "OBS_SCENE": self.scene_opt.get().strip() if getattr(self, "scene_opt", None) else os.getenv("OBS_SCENE", ""),
+            "OBS_SOURCE": self.source_opt.get().strip() if getattr(self, "source_opt", None) else os.getenv("OBS_SOURCE", "Capture1"),
         }
 
         # Read existing lines to preserve comments/unknown keys
@@ -405,11 +498,602 @@ class App(ctk.CTk):
 
         try:
             Path(dotenv_path).write_text("".join(out_lines), encoding="utf-8")
-            self._append_log(f"[App] Saved settings -> {dotenv_path}")
+            self._append_log(f"[アプリ] 設定を保存しました -> {dotenv_path}")
         except Exception as e:
-            mb.showerror("Save Error", f"Failed to save settings to {dotenv_path}\n{e}")
+            mb.showerror("保存エラー", f"設定の保存に失敗しました: {dotenv_path}\n{e}")
             return
 
+
+    # --- Gallery ---
+    def _build_gallery_ui(self, parent: ctk.CTkFrame) -> None:
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        ctrl = ctk.CTkFrame(parent)
+        ctrl.grid(row=0, column=0, sticky="we", pady=(4, 6))
+        ctrl.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(ctrl, text="koutiku:").grid(row=0, column=0, sticky="w", padx=(8, 6), pady=6)
+        self._gallery_path_label = ctk.CTkLabel(ctrl, text=self._current_koutiku_path(), anchor="w")
+        self._gallery_path_label.grid(row=0, column=1, sticky="we", pady=6)
+
+        ctk.CTkButton(ctrl, text="Reload", width=80, command=self._reload_gallery).grid(row=0, column=2, padx=6)
+        ctk.CTkSwitch(ctrl, text="Auto Refresh", variable=self._auto_refresh_var, command=self._toggle_auto_refresh).grid(row=0, column=3, padx=(6, 8))
+
+        # Search controls
+        ctk.CTkLabel(ctrl, text="検索:").grid(row=1, column=0, sticky="e", padx=(8, 6))
+        search_entry = ctk.CTkEntry(ctrl, textvariable=self._gallery_search_var)
+        search_entry.grid(row=1, column=1, sticky="we", pady=6)
+        try:
+            # Live filter: reload gallery as the user types (debounced)
+            search_entry.bind("<KeyRelease>", self._on_search_changed)
+        except Exception:
+            pass
+        ctk.CTkButton(ctrl, text="検索", width=80, command=self._reload_gallery).grid(row=1, column=2, padx=6)
+        ctk.CTkButton(ctrl, text="クリア", width=80, command=lambda: (self._gallery_search_var.set(""), self._reload_gallery())).grid(row=1, column=3, padx=(6, 8))
+
+        # Scrollable grid for thumbnails
+        self._gallery_scroll = ctk.CTkScrollableFrame(parent, corner_radius=8)
+        self._gallery_scroll.grid(row=1, column=0, sticky="nsew")
+        for i in range(4):
+            self._gallery_scroll.grid_columnconfigure(i, weight=1)
+
+    def _current_koutiku_path(self) -> str:
+        base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
+        return os.path.join(base_dir, "koutiku")
+
+    def _reload_gallery(self) -> None:
+        # Token to ignore stale async callbacks from prior reloads
+        try:
+            self._gallery_load_token = (0 if self._gallery_load_token is None else self._gallery_load_token + 1)
+        except Exception:
+            self._gallery_load_token = 0
+        # Update path label
+        try:
+            self._gallery_path_label.configure(text=self._current_koutiku_path())
+        except Exception:
+            pass
+
+        koutiku = self._current_koutiku_path()
+        os.makedirs(koutiku, exist_ok=True)
+
+        # Clear previous thumbnails
+        try:
+            for child in self._gallery_scroll.winfo_children():
+                child.destroy()
+        except Exception:
+            pass
+        self._thumb_refs.clear()
+
+        # Collect image files (fast): use scandir and prefetch mtime
+        exts = {".png", ".jpg", ".jpeg", ".webp"}
+        try:
+            items: list[tuple[str, float]] = []  # (path, mtime)
+            with os.scandir(koutiku) as it:
+                for entry in it:
+                    try:
+                        if not entry.is_file():
+                            continue
+                        if os.path.splitext(entry.name)[1].lower() not in exts:
+                            continue
+                        try:
+                            mt = entry.stat().st_mtime
+                        except Exception:
+                            mt = 0.0
+                        items.append((entry.path, mt))
+                    except Exception:
+                        continue
+        except Exception:
+            items = []
+
+        # Load tags and filter by search query
+        self._load_gallery_tags()
+        query = (self._gallery_search_var.get() or "").strip()
+        tokens = [t for t in query.replace("　", " ").split(" ") if t]
+        if tokens:
+            def _match(path: str) -> bool:
+                name = os.path.basename(path)
+                tags = set(self._gallery_tags_map.get(name, []))
+                for t in tokens:
+                    if t.startswith("tag:") or t.startswith("タグ:"):
+                        key = t.split(":", 1)[1]
+                        if key and key in tags:
+                            return True
+                    else:
+                        if t.lower() in name.lower():
+                            return True
+                return False
+            items = [(p, mt) for (p, mt) in items if _match(p)]
+
+        # Sort by mtime (desc) using prefetched metadata
+        items.sort(key=lambda x: x[1], reverse=True)
+        max_items = int(os.getenv("GALLERY_MAX", "100") or 100)
+        items = items[:max_items]
+        files = [p for (p, _mt) in items]
+
+        # Layout config
+        cols = 4
+        thumb_w = int(os.getenv("GALLERY_THUMB", "240") or 240)
+        pad = 8
+
+        # Shared placeholder to keep UI responsive while thumbnails load
+        placeholder_ctk = None
+        placeholder_h = max(80, int(thumb_w * 9 / 16))
+        try:
+            from PIL import Image as _PILImage
+            _ph = _PILImage.new("RGB", (thumb_w, placeholder_h), color=(64, 64, 64))
+            placeholder_ctk = ctk.CTkImage(light_image=_ph, dark_image=_ph, size=(thumb_w, placeholder_h))
+        except Exception:
+            pass
+
+        def _load_thumb_pil(path: str, max_w: int):
+            # Load and resize in worker thread; return PIL image and size
+            try:
+                with Image.open(path) as im:
+                    w, h = im.size
+                    if w <= 0 or h <= 0:
+                        return None
+                    scale = min(1.0, max_w / float(w))
+                    tw = max(1, int(w * scale))
+                    th = max(1, int(h * scale))
+                    # Faster downscale for thumbnails
+                    thumb = im.copy()
+                    thumb = thumb.resize((tw, th), Image.BILINEAR)
+                    return (thumb, tw, th)
+            except Exception:
+                return None
+
+        def _apply_thumb(btn: ctk.CTkButton, fname: str, path: str, token: int, result):
+            # Runs on Tk thread
+            try:
+                if not btn.winfo_exists():
+                    return
+                if token != self._gallery_load_token:
+                    return  # a newer reload happened
+                if not result:
+                    return
+                img_pil, tw, th = result
+                tk_img = ctk.CTkImage(light_image=img_pil, dark_image=img_pil, size=(tw, th))
+                self._thumb_refs.append(tk_img)
+                btn.configure(image=tk_img, width=tw + 8, height=th + 36)
+            except Exception:
+                pass
+
+        row = 0
+        col = 0
+        current_token = self._gallery_load_token
+        for path in files:
+            try:
+                # Cell frame per item (button + tags label)
+                cell = ctk.CTkFrame(self._gallery_scroll, fg_color="transparent")
+                cell.grid(row=row, column=col, padx=pad, pady=pad, sticky="n")
+                try:
+                    cell.grid_columnconfigure(0, weight=1)
+                except Exception:
+                    pass
+
+                fname = os.path.basename(path)
+                btn = ctk.CTkButton(
+                    cell,
+                    image=placeholder_ctk,
+                    text=fname,
+                    compound="top",
+                    width=(thumb_w + 8),
+                    height=(placeholder_h + 36),
+                    command=lambda p=path: self._open_image_viewer(p),
+                )
+                btn.grid(row=0, column=0, sticky="n")
+                try:
+                    handler = lambda e, p=path: self._open_gallery_context_menu(e, p)
+                    btn.bind("<Button-3>", handler)
+                    cell.bind("<Button-3>", handler)
+                except Exception:
+                    pass
+
+                # Show tags under thumbnail
+                try:
+                    tags = self._gallery_tags_map.get(fname, [])
+                    txt = ", ".join(tags)
+                    if txt:
+                        tag_lbl = ctk.CTkLabel(cell, text=txt, anchor="center")
+                        tag_lbl.grid(row=1, column=0, sticky="n", pady=(4, 0))
+                        try:
+                            tag_lbl.bind("<Button-3>", handler)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Dispatch background load
+                future = self._thumb_executor.submit(_load_thumb_pil, path, thumb_w)
+
+                def _on_done(fut, b=btn, fn=fname, p=path, tok=current_token):
+                    try:
+                        res = fut.result()
+                    except Exception:
+                        res = None
+                    try:
+                        self.after(0, _apply_thumb, b, fn, p, tok, res)
+                    except Exception:
+                        pass
+
+                future.add_done_callback(_on_done)
+
+                col += 1
+                if col >= cols:
+                    col = 0
+                    row += 1
+            except Exception:
+                continue
+
+    def _open_image_viewer(self, path: str) -> None:
+        try:
+            img = Image.open(path)
+        except Exception as e:
+            mb.showerror("画像を開けません", f"画像の読み込みに失敗しました\n{e}")
+            return
+
+        top = ctk.CTkToplevel(self)
+        top.title(os.path.basename(path))
+        # Ensure viewer appears in front of the main window initially
+        try:
+            top.transient(self)  # associate with parent for stacking
+            top.lift()           # raise above other windows
+            top.attributes("-topmost", True)  # force front once
+            top.focus_force()    # move keyboard focus to the viewer
+            # Drop topmost shortly after so normal stacking resumes
+            top.after(200, lambda: top.attributes("-topmost", False))
+        except Exception:
+            pass
+        # Limit size to a reasonable maximum and screen size
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+        except Exception:
+            sw, sh = 1600, 900
+        max_w = min(1200, int(sw * 0.9))
+        max_h = min(900, int(sh * 0.9))
+
+        w, h = img.size
+        scale = min(max_w / float(w), max_h / float(h), 1.0)
+        vw = int(w * scale)
+        vh = int(h * scale)
+        view_img = img.copy().resize((vw, vh), Image.LANCZOS)
+        tk_img = ctk.CTkImage(light_image=view_img, dark_image=view_img, size=(vw, vh))
+
+        frame = ctk.CTkFrame(top)
+        frame.grid(row=0, column=0, padx=12, pady=12, sticky="nsew")
+        try:
+            frame.grid_columnconfigure(0, weight=0)
+            frame.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
+
+        lbl = ctk.CTkLabel(frame, image=tk_img, text="")
+        lbl.grid(row=0, column=0, columnspan=2)
+
+        # Live Tag Editor (auto-saves as you type)
+        try:
+            name = os.path.basename(path)
+            # Ensure tags are loaded
+            self._load_gallery_tags()
+            cur_tags = self._gallery_tags_map.get(name, [])
+
+            ctk.CTkLabel(frame, text="Tags").grid(row=1, column=0, sticky="e", padx=(0, 8), pady=(10, 0))
+            tag_var = tk.StringVar(value=", ".join(cur_tags))
+            tag_entry = ctk.CTkEntry(frame, textvariable=tag_var)
+            tag_entry.grid(row=1, column=1, sticky="we", pady=(10, 0))
+
+            def _on_tags_typing(event=None, fname=name):
+                # Debounce saves per file
+                try:
+                    prev = self._tag_edit_after_ids.get(fname)
+                    if prev is not None:
+                        try:
+                            self.after_cancel(prev)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                def _commit():
+                    text = tag_var.get()
+                    tags = self._parse_tags(text)
+                    try:
+                        if tags:
+                            self._gallery_tags_map[fname] = tags
+                        else:
+                            self._gallery_tags_map.pop(fname, None)
+                        self._save_gallery_tags()
+                        # Refresh gallery so searches like tag:xxx reflect immediately
+                        self._reload_gallery()
+                    except Exception:
+                        pass
+
+                try:
+                    self._tag_edit_after_ids[fname] = self.after(300, _commit)
+                except Exception:
+                    _commit()
+
+            # Suggestions area under the entry
+            sugg_frame = ctk.CTkFrame(frame, fg_color="transparent")
+            sugg_frame.grid(row=2, column=0, columnspan=2, sticky="we")
+
+            def _update_suggestions():
+                # Clear previous
+                try:
+                    for w in list(sugg_frame.winfo_children()):
+                        w.destroy()
+                except Exception:
+                    pass
+                text = tag_var.get()
+                # Determine existing tokens and current partial
+                try:
+                    sep = r"[\s,、，]+"
+                    tokens = [t for t in re.split(sep, text) if t]
+                    trailing_sep = re.search(sep + r"$", text) is not None
+                    partial = "" if trailing_sep else (tokens[-1] if tokens else "")
+                    existing = set(t.lower() for t in tokens if t)
+                except Exception:
+                    partial = ""
+                    existing = set()
+                pool = [t for t in self._all_existing_tags() if t.lower() not in existing]
+                if partial:
+                    pool = [t for t in pool if t.lower().startswith(partial.lower())]
+                pool = pool[:8]
+                if not pool:
+                    return
+                # Render suggestion buttons
+                for i, t in enumerate(pool):
+                    b = ctk.CTkButton(
+                        sugg_frame,
+                        text=t,
+                        width=1,
+                        height=24,
+                        command=lambda tag=t: _apply_suggestion(tag),
+                    )
+                    b.grid(row=0, column=i, padx=(0, 6), pady=(6, 0))
+
+            def _apply_suggestion(tag: str):
+                # Merge suggested tag into the field
+                try:
+                    sep = r"[\s,、，]+"
+                    text = tag_var.get()
+                    tokens = [t for t in re.split(sep, text) if t]
+                    trailing_sep = re.search(sep + r"$", text) is not None
+                    if not trailing_sep and tokens:
+                        tokens = tokens[:-1]  # drop partial
+                    if tag not in tokens:
+                        tokens.append(tag)
+                    tag_var.set(", ".join(tokens))
+                    _on_tags_typing()
+                    _update_suggestions()
+                except Exception:
+                    pass
+
+            def _on_key(event=None):
+                _on_tags_typing(event)
+                _update_suggestions()
+
+            tag_entry.bind("<KeyRelease>", _on_key)
+            # Initial suggestions
+            _update_suggestions()
+        except Exception:
+            pass
+
+        # Keep a reference on the toplevel to avoid GC
+        top._img_ref = tk_img  # type: ignore[attr-defined]
+        top.geometry(f"{vw+40}x{vh+120}")
+
+        # Close on ESC
+        try:
+            top.bind("<Escape>", lambda e: top.destroy())
+        except Exception:
+            pass
+
+    def _toggle_auto_refresh(self) -> None:
+        if self._auto_refresh_var.get():
+            self._schedule_gallery_refresh()
+        else:
+            if self._gallery_after_id is not None:
+                try:
+                    self.after_cancel(self._gallery_after_id)
+                except Exception:
+                    pass
+                self._gallery_after_id = None
+
+    def _schedule_gallery_refresh(self) -> None:
+        if not self._auto_refresh_var.get():
+            return
+        try:
+            self._reload_gallery()
+        except Exception:
+            pass
+        # Schedule next refresh
+        try:
+            # every 20 minutes (20 * 60 * 1000 ms)
+            self._gallery_after_id = self.after(1200000, self._schedule_gallery_refresh)
+        except Exception:
+            self._gallery_after_id = None
+
+    # --- Gallery context menu ---
+    def _open_gallery_context_menu(self, event, path: str) -> None:
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="エクスプローラで開く", command=lambda p=path: self._gallery_open_in_explorer(p))
+        menu.add_command(label="パスをコピー", command=lambda p=path: self._gallery_copy_path(p))
+        menu.add_separator()
+        menu.add_command(label="タグを追加…", command=lambda p=path: self._gallery_add_tag(p))
+        menu.add_command(label="タグを削除…", command=lambda p=path: self._gallery_remove_tag(p))
+        menu.add_command(label="タグを表示", command=lambda p=path: self._gallery_show_tags(p))
+        menu.add_separator()
+        menu.add_command(label="削除", command=lambda p=path: self._gallery_delete_file(p))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _gallery_open_in_explorer(self, path: str) -> None:
+        try:
+            if os.name == "nt":
+                subprocess.Popen(["explorer", f"/select,{os.path.normpath(path)}"])  # type: ignore[arg-type]
+            else:
+                folder = os.path.dirname(path)
+                subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", folder])
+        except Exception as e:
+            mb.showerror("エラー", f"エクスプローラを開けませんでした\n{e}")
+
+    def _gallery_copy_path(self, path: str) -> None:
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(path)
+        except Exception:
+            pass
+
+    def _gallery_delete_file(self, path: str) -> None:
+        if not mb.askyesno("削除の確認", f"次のファイルを削除しますか？\n{os.path.basename(path)}"):
+            return
+        try:
+            os.remove(path)
+        except Exception as e:
+            mb.showerror("削除エラー", f"削除に失敗しました\n{e}")
+            return
+        self._reload_gallery()
+
+    def _tags_json_path(self) -> str:
+        return os.path.join(self._current_koutiku_path(), "_tags.json")
+
+    def _load_gallery_tags(self) -> None:
+        try:
+            with open(self._tags_json_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    self._gallery_tags_map = {k: list(v) for k, v in data.items() if isinstance(v, list)}
+        except Exception:
+            self._gallery_tags_map = {}
+
+    def _save_gallery_tags(self) -> None:
+        try:
+            with open(self._tags_json_path(), "w", encoding="utf-8") as f:
+                json.dump(self._gallery_tags_map, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self._append_log(f"[ギャラリー] タグ保存に失敗: {e}")
+
+    def _parse_tags(self, text: str) -> List[str]:
+        try:
+            parts = re.split(r"[\s,、，]+", (text or "").strip())
+        except Exception:
+            parts = [(text or "").strip()]
+        result: List[str] = []
+        seen = set()
+        for p in parts:
+            t = p.strip()
+            if not t:
+                continue
+            if t not in seen:
+                seen.add(t)
+                result.append(t)
+        return result
+
+    def _all_existing_tags(self) -> List[str]:
+        try:
+            all_tags = set()
+            for v in self._gallery_tags_map.values():
+                try:
+                    for t in v:
+                        if t:
+                            all_tags.add(str(t))
+                except Exception:
+                    continue
+            return sorted(all_tags, key=lambda s: s.lower())
+        except Exception:
+            return []
+
+    def _gallery_add_tag(self, path: str) -> None:
+        name = os.path.basename(path)
+        tag = sd.askstring("タグを追加", "タグ名を入力:")
+        if not tag:
+            return
+        self._gallery_tags_map.setdefault(name, [])
+        if tag not in self._gallery_tags_map[name]:
+            self._gallery_tags_map[name].append(tag)
+            self._save_gallery_tags()
+            self._reload_gallery()
+
+    def _gallery_remove_tag(self, path: str) -> None:
+        name = os.path.basename(path)
+        tags = self._gallery_tags_map.get(name, [])
+        if not tags:
+            mb.showinfo("タグ", "この画像にはタグがありません。")
+            return
+        tag = sd.askstring("タグを削除", f"削除するタグ名を入力\n既存: {', '.join(tags)}")
+        if not tag:
+            return
+        try:
+            self._gallery_tags_map[name] = [t for t in tags if t != tag]
+            if not self._gallery_tags_map[name]:
+                self._gallery_tags_map.pop(name, None)
+            self._save_gallery_tags()
+            self._reload_gallery()
+        except Exception:
+            pass
+
+    def _gallery_show_tags(self, path: str) -> None:
+        name = os.path.basename(path)
+        tags = self._gallery_tags_map.get(name, [])
+        mb.showinfo("タグ", ", ".join(tags) if tags else "タグはありません。")
+
+    # --- OBS helpers ---
+    def _refresh_obs_lists(self) -> None:
+        host = self.host_entry.get().strip()
+        try:
+            port = int(self.port_entry.get())
+        except Exception:
+            mb.showerror("入力エラー", "Port は数値で入力してください")
+            return
+        password = self.pass_entry.get()
+
+        created_temp = False
+        client = self._obs
+        try:
+            if client is None:
+                client = ObsClient(host, port, password, self._lock)
+                client.connect()
+                created_temp = True
+            scenes = []
+            sources = []
+            try:
+                scenes = client.list_scenes()
+            except Exception:
+                scenes = []
+            try:
+                sources = client.list_sources()
+            except Exception:
+                sources = []
+
+            # Update UI lists
+            if not scenes:
+                scenes = [self.scene_opt.get() or os.getenv("OBS_SCENE", "")]
+            if not sources:
+                sources = [self.source_opt.get() or os.getenv("OBS_SOURCE", "Capture1")]
+
+            self.scene_opt.configure(values=scenes)
+            # keep selection if possible
+            cur_scene = self.scene_opt.get()
+            self.scene_opt.set(cur_scene if cur_scene in scenes else (scenes[0] if scenes else ""))
+
+            self.source_opt.configure(values=sources)
+            cur_source = self.source_opt.get()
+            self.source_opt.set(cur_source if cur_source in sources else (sources[0] if sources else "Capture1"))
+
+            self._append_log("[アプリ] シーン/ソース一覧を更新しました")
+        except Exception as e:
+            mb.showerror("取得エラー", f"シーン/ソースの取得に失敗しました\n{e}")
+        finally:
+            if created_temp and client is not None:
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
 
 def main() -> None:
     app = App()
