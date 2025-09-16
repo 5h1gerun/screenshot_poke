@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 import tkinter as tk
@@ -60,6 +61,10 @@ class App(ctk.CTk):
         self._thumb_refs: list[ctk.CTkImage] = []
         self._auto_refresh_var = tk.BooleanVar(value=True)
         self._gallery_after_id: Optional[str] = None
+        # Live search debounce timer id
+        self._search_after_id: Optional[str] = None
+        # Live tag edit debounce ids per filename
+        self._tag_edit_after_ids: Dict[str, str] = {}
 
         self._build_ui()
 
@@ -192,6 +197,18 @@ class App(ctk.CTk):
         self._schedule_gallery_refresh()
 
     # --- callbacks ---
+    def _on_search_changed(self, event=None) -> None:
+        try:
+            if self._search_after_id is not None:
+                self.after_cancel(self._search_after_id)
+        except Exception:
+            pass
+        try:
+            # Debounce frequent typing to avoid excessive reloads
+            self._search_after_id = self.after(250, self._reload_gallery)
+        except Exception:
+            self._search_after_id = None
+
     def _browse_base_dir(self) -> None:
         path = fd.askdirectory(title="Choose base directory")
         if path:
@@ -501,6 +518,11 @@ class App(ctk.CTk):
         ctk.CTkLabel(ctrl, text="検索:").grid(row=1, column=0, sticky="e", padx=(8, 6))
         search_entry = ctk.CTkEntry(ctrl, textvariable=self._gallery_search_var)
         search_entry.grid(row=1, column=1, sticky="we", pady=6)
+        try:
+            # Live filter: reload gallery as the user types (debounced)
+            search_entry.bind("<KeyRelease>", self._on_search_changed)
+        except Exception:
+            pass
         ctk.CTkButton(ctrl, text="検索", width=80, command=self._reload_gallery).grid(row=1, column=2, padx=6)
         ctk.CTkButton(ctrl, text="クリア", width=80, command=lambda: (self._gallery_search_var.set(""), self._reload_gallery())).grid(row=1, column=3, padx=(6, 8))
 
@@ -588,10 +610,18 @@ class App(ctk.CTk):
                 tk_img = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=(tw, th))
                 self._thumb_refs.append(tk_img)
 
+                # Cell frame per item (button + tags label)
+                cell = ctk.CTkFrame(self._gallery_scroll, fg_color="transparent")
+                cell.grid(row=row, column=col, padx=pad, pady=pad, sticky="n")
+                try:
+                    cell.grid_columnconfigure(0, weight=1)
+                except Exception:
+                    pass
+
                 # Button with image + filename under it
                 fname = os.path.basename(path)
                 btn = ctk.CTkButton(
-                    self._gallery_scroll,
+                    cell,
                     image=tk_img,
                     text=fname,
                     compound="top",
@@ -599,9 +629,25 @@ class App(ctk.CTk):
                     height=th + 36,
                     command=lambda p=path: self._open_image_viewer(p),
                 )
-                btn.grid(row=row, column=col, padx=pad, pady=pad, sticky="n")
+                btn.grid(row=0, column=0, sticky="n")
                 try:
-                    btn.bind("<Button-3>", lambda e, p=path: self._open_gallery_context_menu(e, p))
+                    handler = lambda e, p=path: self._open_gallery_context_menu(e, p)
+                    btn.bind("<Button-3>", handler)
+                    cell.bind("<Button-3>", handler)
+                except Exception:
+                    pass
+
+                # Show tags under thumbnail
+                try:
+                    tags = self._gallery_tags_map.get(fname, [])
+                    txt = ", ".join(tags)
+                    if txt:
+                        tag_lbl = ctk.CTkLabel(cell, text=txt, anchor="center")
+                        tag_lbl.grid(row=1, column=0, sticky="n", pady=(4, 0))
+                        try:
+                            tag_lbl.bind("<Button-3>", handler)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -649,13 +695,128 @@ class App(ctk.CTk):
         tk_img = ctk.CTkImage(light_image=view_img, dark_image=view_img, size=(vw, vh))
 
         frame = ctk.CTkFrame(top)
-        frame.grid(row=0, column=0, padx=12, pady=12)
+        frame.grid(row=0, column=0, padx=12, pady=12, sticky="nsew")
+        try:
+            frame.grid_columnconfigure(0, weight=0)
+            frame.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
+
         lbl = ctk.CTkLabel(frame, image=tk_img, text="")
-        lbl.grid(row=0, column=0)
+        lbl.grid(row=0, column=0, columnspan=2)
+
+        # Live Tag Editor (auto-saves as you type)
+        try:
+            name = os.path.basename(path)
+            # Ensure tags are loaded
+            self._load_gallery_tags()
+            cur_tags = self._gallery_tags_map.get(name, [])
+
+            ctk.CTkLabel(frame, text="Tags").grid(row=1, column=0, sticky="e", padx=(0, 8), pady=(10, 0))
+            tag_var = tk.StringVar(value=", ".join(cur_tags))
+            tag_entry = ctk.CTkEntry(frame, textvariable=tag_var)
+            tag_entry.grid(row=1, column=1, sticky="we", pady=(10, 0))
+
+            def _on_tags_typing(event=None, fname=name):
+                # Debounce saves per file
+                try:
+                    prev = self._tag_edit_after_ids.get(fname)
+                    if prev is not None:
+                        try:
+                            self.after_cancel(prev)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                def _commit():
+                    text = tag_var.get()
+                    tags = self._parse_tags(text)
+                    try:
+                        if tags:
+                            self._gallery_tags_map[fname] = tags
+                        else:
+                            self._gallery_tags_map.pop(fname, None)
+                        self._save_gallery_tags()
+                        # Refresh gallery so searches like tag:xxx reflect immediately
+                        self._reload_gallery()
+                    except Exception:
+                        pass
+
+                try:
+                    self._tag_edit_after_ids[fname] = self.after(300, _commit)
+                except Exception:
+                    _commit()
+
+            # Suggestions area under the entry
+            sugg_frame = ctk.CTkFrame(frame, fg_color="transparent")
+            sugg_frame.grid(row=2, column=0, columnspan=2, sticky="we")
+
+            def _update_suggestions():
+                # Clear previous
+                try:
+                    for w in list(sugg_frame.winfo_children()):
+                        w.destroy()
+                except Exception:
+                    pass
+                text = tag_var.get()
+                # Determine existing tokens and current partial
+                try:
+                    sep = r"[\s,、，]+"
+                    tokens = [t for t in re.split(sep, text) if t]
+                    trailing_sep = re.search(sep + r"$", text) is not None
+                    partial = "" if trailing_sep else (tokens[-1] if tokens else "")
+                    existing = set(t.lower() for t in tokens if t)
+                except Exception:
+                    partial = ""
+                    existing = set()
+                pool = [t for t in self._all_existing_tags() if t.lower() not in existing]
+                if partial:
+                    pool = [t for t in pool if t.lower().startswith(partial.lower())]
+                pool = pool[:8]
+                if not pool:
+                    return
+                # Render suggestion buttons
+                for i, t in enumerate(pool):
+                    b = ctk.CTkButton(
+                        sugg_frame,
+                        text=t,
+                        width=1,
+                        height=24,
+                        command=lambda tag=t: _apply_suggestion(tag),
+                    )
+                    b.grid(row=0, column=i, padx=(0, 6), pady=(6, 0))
+
+            def _apply_suggestion(tag: str):
+                # Merge suggested tag into the field
+                try:
+                    sep = r"[\s,、，]+"
+                    text = tag_var.get()
+                    tokens = [t for t in re.split(sep, text) if t]
+                    trailing_sep = re.search(sep + r"$", text) is not None
+                    if not trailing_sep and tokens:
+                        tokens = tokens[:-1]  # drop partial
+                    if tag not in tokens:
+                        tokens.append(tag)
+                    tag_var.set(", ".join(tokens))
+                    _on_tags_typing()
+                    _update_suggestions()
+                except Exception:
+                    pass
+
+            def _on_key(event=None):
+                _on_tags_typing(event)
+                _update_suggestions()
+
+            tag_entry.bind("<KeyRelease>", _on_key)
+            # Initial suggestions
+            _update_suggestions()
+        except Exception:
+            pass
 
         # Keep a reference on the toplevel to avoid GC
         top._img_ref = tk_img  # type: ignore[attr-defined]
-        top.geometry(f"{vw+40}x{vh+80}")
+        top.geometry(f"{vw+40}x{vh+120}")
 
         # Close on ESC
         try:
@@ -749,6 +910,36 @@ class App(ctk.CTk):
                 json.dump(self._gallery_tags_map, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self._append_log(f"[ギャラリー] タグ保存に失敗: {e}")
+
+    def _parse_tags(self, text: str) -> List[str]:
+        try:
+            parts = re.split(r"[\s,、，]+", (text or "").strip())
+        except Exception:
+            parts = [(text or "").strip()]
+        result: List[str] = []
+        seen = set()
+        for p in parts:
+            t = p.strip()
+            if not t:
+                continue
+            if t not in seen:
+                seen.add(t)
+                result.append(t)
+        return result
+
+    def _all_existing_tags(self) -> List[str]:
+        try:
+            all_tags = set()
+            for v in self._gallery_tags_map.values():
+                try:
+                    for t in v:
+                        if t:
+                            all_tags.add(str(t))
+                except Exception:
+                    continue
+            return sorted(all_tags, key=lambda s: s.lower())
+        except Exception:
+            return []
 
     def _gallery_add_tag(self, path: str) -> None:
         name = os.path.basename(path)
