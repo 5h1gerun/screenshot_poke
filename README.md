@@ -1,47 +1,48 @@
-# OBS Screenshot/Template Tool (GUI Only)
+# OBS スクリーンショット／テンプレート ツール（GUI専用）
 
-This repository provides the Tkinter-based GUI application combined_app.py for capturing OBS WebSocket scenes, performing template matching, and producing images and text updates for OBS.
+このリポジトリは、Tkinter ベースの GUI アプリケーション `combined_app.py` を提供します。OBS WebSocket 経由でシーンを取得し、テンプレートマッチングを実行して、OBS 向けの画像出力やテキスト更新を行います。
 
-## Requirements
+## 必要条件
 - Python 3.10+
-- OBS (with WebSocket enabled)
-- Windows / macOS / Linux (screen coordinates and template assets depend on your setup)
+- OBS（WebSocket を有効化）
+- Windows / macOS / Linux（画面座標やテンプレート素材は環境に依存）
 
-## Setup
-1. Install dependencies:
+## セットアップ
+1. 依存関係のインストール:
 
-`
+```
 pip install -r requirements.txt
-`
+```
 
-2. Configure environment variables (recommended):
-   - Copy .env.example to .env.
-   - Update the values to match your OBS host/port/password and the base working directory (BASE_DIR).
+2. 環境変数の設定（推奨）:
+   - `.env.example` を `.env` にコピー
+   - OBS のホスト／ポート／パスワードとベース作業ディレクトリ（`BASE_DIR`）に合わせて値を更新
 
-All of these values can also be supplied from the GUI once the app is running. Secrets such as passwords should stay in .env, which is ignored by git.
+これらの値はアプリ起動後に GUI からも設定できます。パスワードなどの秘密情報は Git に無視される `.env` に保存してください。
 
-## Usage
-Run the GUI application with:
+## 使い方
+GUI アプリを起動:
 
-`
+```
 python combined_app.py
-`
+```
 
-After launch, confirm:
-- OBS connection information (host, port, password)
-- Base directory (BASE_DIR), which should contain/produce handantmp, haisin, and koutiku
+起動後に確認:
+- OBS 接続情報（host、port、password）
+- ベースディレクトリ（`BASE_DIR`）: ここに `handantmp`、`haisin`、`koutiku` が存在（または生成）されます
 
-## Directory Overview
-- handantmp/: Template images and in-progress screenshots
-- haisin/: Output images for streaming
-- koutiku/: Saved materials for later reuse
+## ディレクトリ構成
+- `handantmp/`: テンプレート画像および作業中のスクリーンショット
+- `haisin/`: 配信用の出力画像
+- `koutiku/`: 後で再利用するための素材保存
 
-The .gitignore keeps volatile/generated images (e.g., scene*.png, screenshot*.png, *cropped*.png) out of version control. Preserve required templates such as anme*.jpg and masu.png.
+`.gitignore` は、`scene*.png`、`screenshot*.png`、`*cropped*.png` などの一時的／生成画像をバージョン管理から除外します。`banme*.jpg` や `masu.png` など必要なテンプレートは保持してください。
 
-## Security Notes
-- Keep passwords and personal data in environment variables, not in the source code.
-- Verify licensing/rights for any template or screenshot assets before sharing publicly.
-- Scrub secrets when sharing logs or images in PRs/issues.
+## セキュリティ上の注意
+- パスワードや個人情報はソースコードではなく環境変数に保存してください。
+- テンプレートやスクリーンショット素材のライセンス／権利を公開前に確認してください。
+- PR／Issue でログや画像を共有する際は、秘密情報が含まれないようにご注意ください。
 
-## License
-Add an appropriate license file (e.g., MIT or Apache-2.0) before publishing.
+## ライセンス
+本プロジェクトは MIT ライセンスで提供します。詳細は同梱の `LICENSE` ファイルを参照してください。
+
