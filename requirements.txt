@@ -6,3 +6,4 @@ pillow
 pywebview
 customtkinter
 darkdetect
+python-dotenv
