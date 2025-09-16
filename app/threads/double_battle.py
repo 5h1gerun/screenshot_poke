@@ -64,7 +64,9 @@ class DoubleBattleThread(threading.Thread):
         try:
             while not self._stop.is_set():
                 self._iteration()
-                time.sleep(2)
+                # Sleep but remain responsive to stop
+                if self._stop.wait(2):
+                    return
         except Exception as e:
             self._log.log(f"[ダブルバトル] エラー: {e}")
         finally:
@@ -158,6 +160,7 @@ class DoubleBattleThread(threading.Thread):
                     combined = cv2.vconcat(matched_new)
                     cv2.imwrite(self._haisinsensyutu_path, combined)
                     self._log.log(f"[ダブルバトル] 抽出画像を書き出し: {self._haisinsensyutu_path}")
-
-                time.sleep(1)
+                # Stay responsive to stop while looping
+                if self._stop.wait(1):
+                    return
 

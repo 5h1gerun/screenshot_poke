@@ -57,6 +57,8 @@ class App(ctk.CTk):
         self.scene_opt: ctk.CTkOptionMenu
         self.source_opt: ctk.CTkOptionMenu
         self._gallery_search_var = tk.StringVar(value="")
+        # Keep a handle to the search entry to detach textvariable on rebuild
+        self._gallery_search_entry: Optional[ctk.CTkEntry] = None
         self._gallery_tags_map: Dict[str, List[str]] = {}
         # Gallery state
         self._thumb_refs: list[ctk.CTkImage] = []
@@ -75,6 +77,11 @@ class App(ctk.CTk):
         self._gallery_load_token: Optional[int] = None
 
         self._build_ui()
+        # Graceful shutdown on window close
+        try:
+            self.protocol("WM_DELETE_WINDOW", self._on_close)
+        except Exception:
+            pass
 
     # --- UI ---
     def _build_ui(self) -> None:
@@ -338,6 +345,43 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _on_close(self) -> None:
+        # Stop background threads and timers safely
+        try:
+            self._stop_threads()
+        except Exception:
+            pass
+        # Cancel scheduled callbacks
+        try:
+            if getattr(self, "_search_after_id", None):
+                try:
+                    self.after_cancel(self._search_after_id)
+                except Exception:
+                    pass
+                self._search_after_id = None
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_gallery_after_id", None):
+                try:
+                    self.after_cancel(self._gallery_after_id)
+                except Exception:
+                    pass
+                self._gallery_after_id = None
+        except Exception:
+            pass
+        # Shutdown thumbnail executor
+        try:
+            if getattr(self, "_thumb_executor", None):
+                self._thumb_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        # Destroy window
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
     def _change_appearance(self, mode: str) -> None:
         try:
             ctk.set_appearance_mode(mode)
@@ -384,6 +428,49 @@ class App(ctk.CTk):
                 log_content = self.log_text.get("1.0", "end-1c")
             except Exception:
                 pass
+
+        # Proactively cancel pending timers that might reference destroyed widgets
+        try:
+            if self._search_after_id is not None:
+                try:
+                    self.after_cancel(self._search_after_id)
+                except Exception:
+                    pass
+                self._search_after_id = None
+        except Exception:
+            pass
+        try:
+            if self._gallery_after_id is not None:
+                try:
+                    self.after_cancel(self._gallery_after_id)
+                except Exception:
+                    pass
+                self._gallery_after_id = None
+        except Exception:
+            pass
+
+        # Detach textvariable from search entry to avoid stale trace callbacks
+        try:
+            if getattr(self, "_gallery_search_entry", None) is not None:
+                entry = self._gallery_search_entry
+                try:
+                    if hasattr(entry, "winfo_exists") and entry.winfo_exists():
+                        entry.configure(textvariable=None)
+                except Exception:
+                    pass
+                self._gallery_search_entry = None
+        except Exception:
+            pass
+
+        # Replace the search StringVar to drop any traces bound by old widgets
+        try:
+            _cur_search = self._gallery_search_var.get() if self._gallery_search_var is not None else ""
+        except Exception:
+            _cur_search = ""
+        try:
+            self._gallery_search_var = tk.StringVar(value=_cur_search)
+        except Exception:
+            pass
 
         for child in self.winfo_children():
             try:
@@ -634,6 +721,11 @@ class App(ctk.CTk):
         ctk.CTkLabel(ctrl, text="検索:").grid(row=1, column=0, sticky="e", padx=(8, 6))
         search_entry = ctk.CTkEntry(ctrl, textvariable=self._gallery_search_var)
         search_entry.grid(row=1, column=1, sticky="we", pady=6)
+        # Store reference so we can detach textvariable safely on rebuild
+        try:
+            self._gallery_search_entry = search_entry
+        except Exception:
+            pass
         try:
             # Live filter: reload gallery as the user types (debounced)
             search_entry.bind("<KeyRelease>", self._on_search_changed)

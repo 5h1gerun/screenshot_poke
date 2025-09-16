@@ -9,9 +9,11 @@ except Exception:  # pragma: no cover
 
 
 class UiLogger:
-    """Thread-aware logger that can write to a Tk Text-like widget or fallback to print.
+    """Thread-aware logger for Tkinter-like widgets.
 
-    Pass a callable to override output (e.g., Textual logger) if desired.
+    - If a Tk widget is provided, always marshal delivery via `widget.after(0, ...)` to
+      ensure UI updates occur on the main thread.
+    - If no widget is available, call the provided callback or fall back to print.
     """
 
     def __init__(self, append_cb: Optional[Callable[[str], None]] = None, widget: Optional[object] = None):
@@ -19,26 +21,42 @@ class UiLogger:
         self._widget = widget
 
     def log(self, message: str) -> None:
+        w = self._widget
+        # Prefer scheduling on the UI thread if a widget is available
+        if w is not None and hasattr(w, "after"):
+            try:
+                w.after(0, lambda: self._deliver_on_ui_thread(message))
+                return
+            except Exception:
+                # Fall through to direct callback/print if scheduling fails
+                pass
+
+        # No widget: try callback, then print
         if callable(self._append_cb):
             try:
                 self._append_cb(message)
                 return
             except Exception:
                 pass
-        w = self._widget
-        if w is not None and hasattr(w, "after") and hasattr(w, "insert"):
+        print(message)
+
+    def _deliver_on_ui_thread(self, message: str) -> None:
+        # On UI thread now: prefer the append callback if present
+        if callable(self._append_cb):
             try:
-                w.after(0, lambda: self._insert(w, message))
+                self._append_cb(message)
+                return
+            except Exception:
+                pass
+        # Fallback to inserting directly if widget supports it
+        w = self._widget
+        if w is not None and hasattr(w, "insert"):
+            try:
+                w.insert("end", message + "\n")
+                if hasattr(w, "see"):
+                    w.see("end")
                 return
             except Exception:
                 pass
         print(message)
-
-    @staticmethod
-    def _insert(widget, message: str):
-        try:
-            widget.insert("end", message + "\n")
-            widget.see("end")
-        except Exception:
-            print(message)
 
