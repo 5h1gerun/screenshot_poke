@@ -26,4 +26,5 @@ koutiku/**/*.png
 koutiku/**/*.jpg
 koutiku/**/*.jpeg
 koutiku/**/*.webp
+koutiku/*.json
 !koutiku/readme.md
