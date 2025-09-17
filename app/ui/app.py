@@ -22,7 +22,9 @@ from app.obs_client import ObsClient
 from app.threads.double_battle import DoubleBattleThread
 from app.threads.rkaisi_teisi import RkaisiTeisiThread
 from app.threads.syouhai import SyouhaiThread
+from app.threads.discord_webhook import DiscordWebhookThread
 from app.utils.logging import UiLogger
+from app.version import VERSION as APP_VERSION
 
 
 class App(ctk.CTk):
@@ -44,6 +46,7 @@ class App(ctk.CTk):
         self._th_double: Optional[DoubleBattleThread] = None
         self._th_rkaisi: Optional[RkaisiTeisiThread] = None
         self._th_syouhai: Optional[SyouhaiThread] = None
+        self._th_discord: Optional[DiscordWebhookThread] = None
 
         # Widgets
         self.host_entry: ctk.CTkEntry
@@ -53,6 +56,8 @@ class App(ctk.CTk):
         self.chk_double_var = tk.BooleanVar(value=self._env_bool("ENABLE_DOUBLE", True))
         self.chk_rkaisi_var = tk.BooleanVar(value=self._env_bool("ENABLE_RKAISI", True))
         self.chk_syouhai_var = tk.BooleanVar(value=self._env_bool("ENABLE_SYOUHAI", True))
+        self.chk_discord_var = tk.BooleanVar(value=self._env_bool("ENABLE_DISCORD", False))
+        self.discord_url_var = tk.StringVar(value=os.getenv("DISCORD_WEBHOOK_URL", ""))
         self.log_text: ctk.CTkTextbox
         self.scene_opt: ctk.CTkOptionMenu
         self.source_opt: ctk.CTkOptionMenu
@@ -147,11 +152,24 @@ class App(ctk.CTk):
         ctk.CTkLabel(script_frame, text="Scripts", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=8, pady=(8, 4))
         ctk.CTkCheckBox(script_frame, text="構築のスクリーンショット", variable=self.chk_double_var).pack(anchor="w", padx=8, pady=2)
         ctk.CTkCheckBox(script_frame, text="自動録画開始・停止", variable=self.chk_rkaisi_var).pack(anchor="w", padx=8, pady=2)
-        ctk.CTkCheckBox(script_frame, text="戦績を自動更新", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=(2, 8))
+        ctk.CTkCheckBox(script_frame, text="戦績を自動更新", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=2)
+
+        # Discord webhook controls
+        discord_frame = ctk.CTkFrame(sidebar, corner_radius=10)
+        discord_frame.grid(row=2, column=0, sticky="we", padx=8, pady=6)
+        ctk.CTkLabel(discord_frame, text="Discord", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
+        )
+        ctk.CTkCheckBox(discord_frame, text="koutiku をDiscordへ送信", variable=self.chk_discord_var).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=8, pady=2
+        )
+        ctk.CTkLabel(discord_frame, text="Webhook URL").grid(row=2, column=0, sticky="e", padx=8, pady=(4, 8))
+        self.discord_url_entry = ctk.CTkEntry(discord_frame, width=260, textvariable=self.discord_url_var)
+        self.discord_url_entry.grid(row=2, column=1, sticky="we", padx=(0, 8), pady=(4, 8))
 
         # Controls
         control_frame = ctk.CTkFrame(sidebar, corner_radius=10)
-        control_frame.grid(row=2, column=0, sticky="we", padx=8, pady=6)
+        control_frame.grid(row=3, column=0, sticky="we", padx=8, pady=6)
         ctk.CTkLabel(control_frame, text="Controls", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
@@ -167,7 +185,7 @@ class App(ctk.CTk):
 
         # Theme
         theme_frame = ctk.CTkFrame(sidebar, corner_radius=10)
-        theme_frame.grid(row=3, column=0, sticky="we", padx=8, pady=(6, 12))
+        theme_frame.grid(row=4, column=0, sticky="we", padx=8, pady=(6, 12))
         ctk.CTkLabel(theme_frame, text="Theme", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
@@ -210,6 +228,11 @@ class App(ctk.CTk):
         self.after(200, self._reload_gallery)
         # Auto-refresh if enabled
         self._schedule_gallery_refresh()
+        # Optional: check updates in background
+        try:
+            self.after(1500, self._maybe_check_updates)
+        except Exception:
+            pass
 
     # --- callbacks ---
     def _on_search_changed(self, event=None) -> None:
@@ -567,9 +590,16 @@ class App(ctk.CTk):
         if self.chk_syouhai_var.get():
             self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger, source_name=src)
             self._th_syouhai.start()
+        if self.chk_discord_var.get():
+            url = (self.discord_url_var.get() or "").strip()
+            if url:
+                self._th_discord = DiscordWebhookThread(base_dir, url, logger)
+                self._th_discord.start()
+            else:
+                self._append_log("[Discord] Webhook URL が未設定のため開始しません")
 
     def _stop_threads(self) -> None:
-        for th in (self._th_double, self._th_rkaisi, self._th_syouhai):
+        for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord):
             try:
                 if th and th.is_alive():
                     th.stop()  # type: ignore[attr-defined]
@@ -577,7 +607,7 @@ class App(ctk.CTk):
                 pass
 
         # Optional join to let threads exit promptly
-        for th in (self._th_double, self._th_rkaisi, self._th_syouhai):
+        for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord):
             try:
                 if th:
                     th.join(timeout=1.0)
@@ -606,6 +636,8 @@ class App(ctk.CTk):
     def _get_dotenv_path(self) -> str:
         # Prefer alongside the main entry file (combined_app.py), fallback to CWD
         try:
+            if getattr(sys, "frozen", False):
+                return str(Path(sys.executable).resolve().parent / ".env")
             main_file = getattr(sys.modules.get("__main__"), "__file__", None)
             if main_file:
                 return str(Path(main_file).resolve().parent / ".env")
@@ -667,6 +699,8 @@ class App(ctk.CTk):
             "ENABLE_SYOUHAI": "true" if self.chk_syouhai_var.get() else "false",
             "OBS_SCENE": self.scene_opt.get().strip() if getattr(self, "scene_opt", None) else os.getenv("OBS_SCENE", ""),
             "OBS_SOURCE": self.source_opt.get().strip() if getattr(self, "source_opt", None) else os.getenv("OBS_SOURCE", "Capture1"),
+            "ENABLE_DISCORD": "true" if self.chk_discord_var.get() else "false",
+            "DISCORD_WEBHOOK_URL": (self.discord_url_var.get() or "").strip(),
         }
 
         # Read existing lines to preserve comments/unknown keys
@@ -699,6 +733,151 @@ class App(ctk.CTk):
         except Exception as e:
             mb.showerror("保存エラー", f"設定の保存に失敗しました: {dotenv_path}\n{e}")
             return
+
+    # --- auto update ---
+    def _maybe_check_updates(self) -> None:
+        enabled = self._env_bool("AUTO_UPDATE", False)
+        feed_url = (os.getenv("UPDATE_FEED_URL", "") or "").strip()
+        if not enabled or not feed_url:
+            return
+
+        def worker():
+            import json, hashlib, tempfile, urllib.request, urllib.error, platform, shutil, time, os, re
+            cur = APP_VERSION
+            try:
+                # Support GitHub shorthand: github://owner/repo
+                url0 = feed_url
+                if str(feed_url).lower().startswith("github://"):
+                    owner_repo = feed_url.split("://", 1)[1]
+                    url0 = f"https://api.github.com/repos/{owner_repo}/releases/latest"
+                headers = {
+                    "User-Agent": "obs-screenshot-tool",
+                    "Accept": "application/vnd.github+json, application/json;q=0.9",
+                }
+                token = (os.getenv("GITHUB_TOKEN", "") or "").strip()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                req = urllib.request.Request(url0, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = resp.read()
+                feed = json.loads(data.decode("utf-8", errors="ignore"))
+            except Exception as e:
+                self._append_log(f"[更新] フィード取得に失敗: {e}")
+                return
+
+            def parse_ver(v: str):
+                try:
+                    parts = [int(p) for p in (v or "0").split(".")]
+                except Exception:
+                    parts = [0]
+                while len(parts) < 3:
+                    parts.append(0)
+                return tuple(parts[:3])
+
+            latest_ver = str(feed.get("version") or feed.get("win", {}).get("version") or "")
+            if parse_ver(latest_ver) <= parse_ver(cur):
+                # Try GitHub Releases JSON format
+                tag = str(feed.get("tag_name") or "")
+                if tag:
+                    latest_ver = tag.lstrip("vV")
+                if not latest_ver or parse_ver(latest_ver) <= parse_ver(cur):
+                    self._append_log("[更新] 最新バージョンです")
+                    return
+
+            win_info = feed.get("win") or {}
+            url = win_info.get("url") or feed.get("url")
+            sha256 = win_info.get("sha256") or feed.get("sha256")
+            notes = feed.get("notes") or feed.get("body") or ""
+
+            # GitHub Releases fallback: pick .exe asset (optionally filter by name)
+            if not url and isinstance(feed.get("assets"), list):
+                pat = (os.getenv("UPDATE_ASSET_PATTERN", "") or "").strip()
+                chosen = None
+                for a in feed.get("assets", []):
+                    try:
+                        name = str(a.get("name") or "")
+                        if not name.lower().endswith(".exe"):
+                            continue
+                        if pat and pat.lower() not in name.lower():
+                            continue
+                        chosen = a
+                        if not pat:
+                            break  # take first .exe if no pattern
+                    except Exception:
+                        continue
+                if chosen:
+                    url = chosen.get("browser_download_url") or url
+                    sha256 = sha256 or chosen.get("sha256")
+            if not url:
+                self._append_log("[更新] Windows 用URLがありません")
+                return
+
+            def ask_update():
+                msg = f"新しいバージョン {latest_ver} が利用可能です。\n今すぐ更新して再起動しますか？\n\n{notes}".strip()
+                if mb.askyesno("アップデート", msg):
+                    self.after(0, lambda: self._perform_update(url, sha256))
+            try:
+                self.after(0, ask_update)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _perform_update(self, url: str, sha256: Optional[str]) -> None:
+        import urllib.request, urllib.error, tempfile, hashlib, shutil, sys, subprocess, time
+        self._append_log("[更新] ダウンロードを開始します...")
+        tmpdir = tempfile.mkdtemp(prefix="upd_")
+        new_path = os.path.join(tmpdir, "update_new.exe")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp, open(new_path, "wb") as f:
+                shutil.copyfileobj(resp, f)
+        except Exception as e:
+            self._append_log(f"[更新] ダウンロード失敗: {e}")
+            return
+        try:
+            if sha256:
+                h = hashlib.sha256()
+                with open(new_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        h.update(chunk)
+                if h.hexdigest().lower() != str(sha256).lower():
+                    mb.showerror("アップデート", "ハッシュ不一致のため中止します")
+                    return
+        except Exception:
+            pass
+
+        # If frozen (running as exe), replace self via a temporary batch
+        frozen = getattr(sys, "frozen", False)
+        if frozen and os.name == "nt":
+            current_exe = sys.executable
+            bat_path = os.path.join(tmpdir, "swap_update.bat")
+            with open(bat_path, "w", encoding="utf-8") as bf:
+                bf.write(
+                    "@echo off\n"
+                    "setlocal enableextensions\n"
+                    "timeout /t 1 /nobreak >nul\n"
+                    f"move /y \"{current_exe}\" \"{current_exe}.old\"\n"
+                    f"move /y \"{new_path}\" \"{current_exe}\"\n"
+                    f"start \"\" \"{current_exe}\"\n"
+                    "endlocal\n"
+                    "del \"%~f0\"\n"
+                )
+            try:
+                subprocess.Popen([bat_path], close_fds=True, creationflags=0x00000008)  # CREATE_NO_WINDOW
+            except Exception:
+                subprocess.Popen([bat_path])
+            # Exit app to release the lock
+            self.after(100, self.destroy)
+            return
+
+        # Not frozen -> just place file and inform user
+        target = os.path.abspath(os.path.join("dist", os.path.basename(url)))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        try:
+            shutil.move(new_path, target)
+        except Exception:
+            shutil.copyfile(new_path, target)
+        mb.showinfo("アップデート", f"新しい実行ファイルを保存しました:\n{target}\n手動で置き換えてください。")
 
 
     # --- Gallery ---
