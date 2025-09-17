@@ -865,9 +865,15 @@ class App(ctk.CTk):
                 return
 
             def ask_update():
+                url2 = url
+                try:
+                    if re.match(r"^https?://github\.com/([^/]+)/([^/]+)/releases/latest/download/([^/?#]+)$", feed_url, re.IGNORECASE):
+                        url2 = feed_url
+                except Exception:
+                    pass
                 msg = f"新しいバージョン {latest_ver} が利用可能です。\n今すぐ更新して再起動しますか？\n\n{notes}".strip()
                 if mb.askyesno("アップデート", msg):
-                    self.after(0, lambda: self._perform_update(url, sha256))
+                    self.after(0, lambda: self._perform_update(url2, sha256))
             try:
                 self.after(0, ask_update)
             except Exception:
@@ -881,7 +887,14 @@ class App(ctk.CTk):
         tmpdir = tempfile.mkdtemp(prefix="upd_")
         new_path = os.path.join(tmpdir, "update_new.exe")
         try:
-            with urllib.request.urlopen(url, timeout=60) as resp, open(new_path, "wb") as f:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "obs-screenshot-tool",
+                    "Accept": "application/octet-stream",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp, open(new_path, "wb") as f:
                 shutil.copyfileobj(resp, f)
         except Exception as e:
             self._append_log(f"[更新] ダウンロード失敗: {e}")
