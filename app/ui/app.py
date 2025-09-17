@@ -1008,6 +1008,29 @@ class App(ctk.CTk):
                 self._append_log(f"[更新] 無効な実行ファイル: {reason}")
                 return
 
+        # Extra: Ensure this looks like a PyInstaller onefile exe (has embedded PKG/MEI cookie)
+        def _has_pyinstaller_cookie(path: str) -> bool:
+            try:
+                magic = b"MEI\x0e\x0b\x0c\x0b\x0e"  # PyInstaller CArchive cookie magic
+                sz = os.path.getsize(path)
+                tail = 256 * 1024
+                with open(path, "rb") as f:
+                    if sz > tail:
+                        f.seek(sz - tail)
+                    data = f.read()
+                return magic in data
+            except Exception:
+                return False
+
+        if not _has_pyinstaller_cookie(new_path):
+            msg = "ダウンロードした実行ファイルに PyInstaller の埋め込みアーカイブが見つかりません。\nダウンロードが不完全か壊れている可能性があります。"
+            self._append_log("[更新] PyInstaller PKG が見つかりません (中止)")
+            try:
+                mb.showerror("アップデート", msg)
+            except Exception:
+                pass
+            return
+
         # If frozen (running as exe), replace self via a temporary batch
         frozen = getattr(sys, "frozen", False)
         if frozen and os.name == "nt":
