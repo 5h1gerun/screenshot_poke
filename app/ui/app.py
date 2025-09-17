@@ -882,17 +882,24 @@ class App(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _perform_update(self, url: str, sha256: Optional[str]) -> None:
-        import urllib.request, urllib.error, tempfile, hashlib, shutil, sys, subprocess, time
+        import urllib.request, urllib.error, tempfile, hashlib, shutil, sys, subprocess, time, os, re
         self._append_log("[更新] ダウンロードを開始します...")
         tmpdir = tempfile.mkdtemp(prefix="upd_")
         new_path = os.path.join(tmpdir, "update_new.exe")
         try:
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "obs-screenshot-tool",
-                },
-            )
+            # Build headers more robustly for GitHub asset downloads
+            dl_headers = {"User-Agent": "obs-screenshot-tool"}
+            try:
+                # If it's a GitHub releases download URL, prefer octet-stream
+                if re.search(r"^https?://github\.com/", url, re.IGNORECASE):
+                    dl_headers["Accept"] = "application/octet-stream"
+                # Pass token when available (helps with private repos/rate limits)
+                token = (os.getenv("GITHUB_TOKEN", "") or "").strip()
+                if token:
+                    dl_headers["Authorization"] = f"Bearer {token}"
+            except Exception:
+                pass
+            req = urllib.request.Request(url, headers=dl_headers)
             with urllib.request.urlopen(req, timeout=60) as resp, open(new_path, "wb") as f:
                 shutil.copyfileobj(resp, f)
         except Exception as e:
@@ -903,6 +910,17 @@ class App(ctk.CTk):
             try:
                 sz = os.path.getsize(path)
                 if sz < 1024 * 100:  # smaller than 100KB is suspicious for PyInstaller onefile
+                    # Try to identify common failure bodies (HTML/JSON/text)
+                    try:
+                        with open(path, "rb") as f:
+                            sniff = f.read(2048)
+                        head = sniff.strip().lower()
+                        if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+                            return False, f"size too small: {sz} bytes (HTML received — possibly 404/login page)"
+                        if head.startswith(b"{") or head.startswith(b"["):
+                            return False, f"size too small: {sz} bytes (JSON received — possibly API error)"
+                    except Exception:
+                        pass
                     return False, f"size too small: {sz} bytes"
                 with open(path, "rb") as f:
                     data = f.read(1024)
