@@ -160,7 +160,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(discord_frame, text="Discord", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
-        ctk.CTkCheckBox(discord_frame, text="koutiku をDiscordへ送信", variable=self.chk_discord_var).grid(
+        ctk.CTkCheckBox(discord_frame, text="構築をDiscordへ送信", variable=self.chk_discord_var).grid(
             row=1, column=0, columnspan=2, sticky="w", padx=8, pady=2
         )
         ctk.CTkLabel(discord_frame, text="Webhook URL").grid(row=2, column=0, sticky="e", padx=8, pady=(4, 8))
