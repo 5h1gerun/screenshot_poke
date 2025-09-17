@@ -860,6 +860,30 @@ class App(ctk.CTk):
         except Exception as e:
             self._append_log(f"[更新] ダウンロード失敗: {e}")
             return
+        
+        def _is_valid_windows_exe(path: str):
+            try:
+                sz = os.path.getsize(path)
+                if sz < 1024 * 100:  # smaller than 100KB is suspicious for PyInstaller onefile
+                    return False, f"size too small: {sz} bytes"
+                with open(path, "rb") as f:
+                    data = f.read(1024)
+                if len(data) < 64 or data[:2] != b"MZ":
+                    return False, "missing MZ header"
+                # e_lfanew at 0x3C gives PE header offset
+                pe_off = int.from_bytes(data[0x3C:0x40], "little", signed=False)
+                with open(path, "rb") as f:
+                    f.seek(pe_off)
+                    sig = f.read(4)
+                    if sig != b"PE\0\0":
+                        return False, "missing PE signature"
+                    # Machine field
+                    mach = int.from_bytes(f.read(2), "little", signed=False)
+                    if mach not in (0x14C, 0x8664):  # 0x14C=i386, 0x8664=x64
+                        return False, f"unknown Machine: 0x{mach:04x}"
+                return True, "ok"
+            except Exception as e:
+                return False, str(e)
         try:
             if sha256:
                 h = hashlib.sha256()
@@ -871,6 +895,13 @@ class App(ctk.CTk):
                     return
         except Exception:
             pass
+
+        # Basic sanity check: downloaded file is a valid PE executable
+        ok, reason = _is_valid_windows_exe(new_path)
+        if not ok:
+            mb.showerror("アップデート", f"ダウンロードしたファイルが実行可能ではありません: {reason}\nURL: {url}")
+            self._append_log(f"[更新] 無効な実行ファイル: {reason}")
+            return
 
         # If frozen (running as exe), replace self via a temporary batch
         frozen = getattr(sys, "frozen", False)
