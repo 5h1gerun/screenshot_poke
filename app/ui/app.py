@@ -744,6 +744,20 @@ class App(ctk.CTk):
         def worker():
             import json, hashlib, tempfile, urllib.request, urllib.error, platform, shutil, time, os, re
             cur = APP_VERSION
+            # Quick path: if UPDATE_FEED_URL points directly to an .exe (non-GitHub),
+            # offer update without querying JSON feeds.
+            gh_latest_dl = re.match(r"^https?://github\.com/([^/]+)/([^/]+)/releases/latest/download/([^/?#]+)$", feed_url, re.IGNORECASE)
+            direct_url = feed_url if feed_url.lower().endswith(".exe") else None
+            if direct_url and not gh_latest_dl:
+                def _ask_direct_update():
+                    msg = "新しいバージョンの確認はできませんでしたが、最新の実行ファイルをダウンロードして適用しますか？"
+                    if mb.askyesno("アップデート", msg):
+                        self.after(0, lambda: self._perform_update(direct_url, None))
+                try:
+                    self.after(0, _ask_direct_update)
+                except Exception:
+                    pass
+                return
             try:
                 # Support GitHub shorthand: github://owner/repo
                 url0 = feed_url
@@ -810,6 +824,13 @@ class App(ctk.CTk):
             # GitHub Releases fallback: pick .exe asset (optionally filter by name)
             if not url and isinstance(feed.get("assets"), list):
                 pat = (os.getenv("UPDATE_ASSET_PATTERN", "") or "").strip()
+                # If UPDATE_FEED_URL is a GitHub latest/download link, prefer that asset name
+                try:
+                    _m = re.match(r"^https?://github\.com/([^/]+)/([^/]+)/releases/latest/download/([^/?#]+)$", feed_url, re.IGNORECASE)
+                    if (not pat) and _m:
+                        pat = _m.group(3)
+                except Exception:
+                    pass
                 chosen = None
                 assets = feed.get("assets", [])
                 for a in assets:
