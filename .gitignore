@@ -31,7 +31,7 @@ koutiku/*.json
 
 # PyInstaller build artifacts
 dist/
-build/
+build/OBS-Screendhot-Tools
 *.spec
 
 # Updater swap backups
