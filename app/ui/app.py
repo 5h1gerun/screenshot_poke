@@ -877,14 +877,25 @@ class App(ctk.CTk):
         if frozen and os.name == "nt":
             current_exe = sys.executable
             bat_path = os.path.join(tmpdir, "swap_update.bat")
+            # Robust swap script: wait for the running EXE to unlock, then replace and relaunch.
             with open(bat_path, "w", encoding="utf-8") as bf:
                 bf.write(
                     "@echo off\n"
                     "setlocal enableextensions\n"
+                    f"set NEW=\"{new_path}\"\n"
+                    f"set DST=\"{current_exe}\"\n"
+                    f"set BACK=\"{current_exe}.old\"\n"
+                    ":wait_rename\n"
                     "timeout /t 1 /nobreak >nul\n"
-                    f"move /y \"{current_exe}\" \"{current_exe}.old\"\n"
-                    f"move /y \"{new_path}\" \"{current_exe}\"\n"
-                    f"start \"\" \"{current_exe}\"\n"
+                    "move /y %DST% %BACK% >nul 2>&1 && goto :renamed\n"
+                    "goto :wait_rename\n"
+                    ":renamed\n"
+                    ":wait_place\n"
+                    "move /y %NEW% %DST% >nul 2>&1 && goto :placed\n"
+                    "timeout /t 1 /nobreak >nul\n"
+                    "goto :wait_place\n"
+                    ":placed\n"
+                    "start \"\" %DST%\n"
                     "endlocal\n"
                     "del \"%~f0\"\n"
                 )
