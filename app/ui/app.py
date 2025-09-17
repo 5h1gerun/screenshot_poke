@@ -891,7 +891,6 @@ class App(ctk.CTk):
                 url,
                 headers={
                     "User-Agent": "obs-screenshot-tool",
-                    "Accept": "application/octet-stream",
                 },
             )
             with urllib.request.urlopen(req, timeout=60) as resp, open(new_path, "wb") as f:
