@@ -28,3 +28,28 @@ koutiku/**/*.jpeg
 koutiku/**/*.webp
 koutiku/*.json
 !koutiku/readme.md
+
+# PyInstaller build artifacts
+dist/
+build/
+*.spec
+
+# Updater swap backups
+*.old
+
+# Runtime output folders (do not track new files)
+# Keep required templates in handantmp but ignore the rest
+handantmp/*
+!handantmp/banme1.jpg
+!handantmp/banme2.jpg
+!handantmp/banme3.jpg
+!handantmp/banme4.jpg
+!handantmp/masu.png
+!handantmp/masu1.png
+!handantmp/win.png
+!handantmp/lose.png
+!handantmp/disconnect.png
+!handantmp/mark.png
+
+# Ignore all streaming/export outputs
+haisin/**
