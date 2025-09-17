@@ -362,11 +362,24 @@ class App(ctk.CTk):
             self.base_dir_entry.insert(0, path)
 
     def _append_log(self, message: str) -> None:
+        # Ensure UI updates are scheduled on the Tk thread
+        def _do_append():
+            try:
+                if getattr(self, "log_text", None) and self.log_text.winfo_exists():
+                    self.log_text.insert("end", message + "\n")
+                    self.log_text.see("end")
+            except Exception:
+                pass
         try:
-            self.log_text.insert("end", message + "\n")
-            self.log_text.see("end")
+            self.after(0, _do_append)
         except Exception:
-            pass
+            # Fallback (e.g., during shutdown) — best effort
+            try:
+                if getattr(self, "log_text", None):
+                    self.log_text.insert("end", message + "\n")
+                    self.log_text.see("end")
+            except Exception:
+                pass
 
     def _on_close(self) -> None:
         # Stop background threads and timers safely
@@ -752,7 +765,8 @@ class App(ctk.CTk):
                 def _ask_direct_update():
                     msg = "新しいバージョンの確認はできませんでしたが、最新の実行ファイルをダウンロードして適用しますか？"
                     if mb.askyesno("アップデート", msg):
-                        self.after(0, lambda: self._perform_update(direct_url, None))
+                        # Run update installer in background to keep UI responsive
+                        threading.Thread(target=self._perform_update, args=(direct_url, None), daemon=True).start()
                 try:
                     self.after(0, _ask_direct_update)
                 except Exception:
@@ -879,7 +893,8 @@ class App(ctk.CTk):
                     pass
                 msg = f"新しいバージョン {latest_ver} が利用可能です。\n今すぐ更新して再起動しますか？\n\n{notes}".strip()
                 if mb.askyesno("アップデート", msg):
-                    self.after(0, lambda: self._perform_update(url2, sha256, asset_api_url))
+                    # Run update process in background thread
+                    threading.Thread(target=self._perform_update, args=(url2, sha256, asset_api_url), daemon=True).start()
             try:
                 self.after(0, ask_update)
             except Exception:
