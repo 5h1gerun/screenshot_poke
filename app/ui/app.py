@@ -760,9 +760,14 @@ class App(ctk.CTk):
                 return
             try:
                 # Support GitHub shorthand: github://owner/repo
+                # Also support GitHub latest/download asset URL by querying the API
                 url0 = feed_url
                 if str(feed_url).lower().startswith("github://"):
                     owner_repo = feed_url.split("://", 1)[1]
+                    url0 = f"https://api.github.com/repos/{owner_repo}/releases/latest"
+                elif gh_latest_dl:
+                    owner, repo, _asset = gh_latest_dl.groups()
+                    owner_repo = f"{owner}/{repo}"
                     url0 = f"https://api.github.com/repos/{owner_repo}/releases/latest"
                 headers = {
                     "User-Agent": "obs-screenshot-tool",
