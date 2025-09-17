@@ -30,7 +30,6 @@ koutiku/*.json
 !koutiku/readme.md
 
 build/OBS-Screenshot-Tool
-**/dist/
 **/build/
 *.spec
 
