@@ -22,6 +22,7 @@ from app.obs_client import ObsClient
 from app.threads.double_battle import DoubleBattleThread
 from app.threads.rkaisi_teisi import RkaisiTeisiThread
 from app.threads.syouhai import SyouhaiThread
+from app.threads.discord_webhook import DiscordWebhookThread
 from app.utils.logging import UiLogger
 
 
@@ -44,6 +45,7 @@ class App(ctk.CTk):
         self._th_double: Optional[DoubleBattleThread] = None
         self._th_rkaisi: Optional[RkaisiTeisiThread] = None
         self._th_syouhai: Optional[SyouhaiThread] = None
+        self._th_discord: Optional[DiscordWebhookThread] = None
 
         # Widgets
         self.host_entry: ctk.CTkEntry
@@ -53,6 +55,8 @@ class App(ctk.CTk):
         self.chk_double_var = tk.BooleanVar(value=self._env_bool("ENABLE_DOUBLE", True))
         self.chk_rkaisi_var = tk.BooleanVar(value=self._env_bool("ENABLE_RKAISI", True))
         self.chk_syouhai_var = tk.BooleanVar(value=self._env_bool("ENABLE_SYOUHAI", True))
+        self.chk_discord_var = tk.BooleanVar(value=self._env_bool("ENABLE_DISCORD", False))
+        self.discord_url_var = tk.StringVar(value=os.getenv("DISCORD_WEBHOOK_URL", ""))
         self.log_text: ctk.CTkTextbox
         self.scene_opt: ctk.CTkOptionMenu
         self.source_opt: ctk.CTkOptionMenu
@@ -147,11 +151,24 @@ class App(ctk.CTk):
         ctk.CTkLabel(script_frame, text="Scripts", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=8, pady=(8, 4))
         ctk.CTkCheckBox(script_frame, text="構築のスクリーンショット", variable=self.chk_double_var).pack(anchor="w", padx=8, pady=2)
         ctk.CTkCheckBox(script_frame, text="自動録画開始・停止", variable=self.chk_rkaisi_var).pack(anchor="w", padx=8, pady=2)
-        ctk.CTkCheckBox(script_frame, text="戦績を自動更新", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=(2, 8))
+        ctk.CTkCheckBox(script_frame, text="戦績を自動更新", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=2)
+
+        # Discord webhook controls
+        discord_frame = ctk.CTkFrame(sidebar, corner_radius=10)
+        discord_frame.grid(row=2, column=0, sticky="we", padx=8, pady=6)
+        ctk.CTkLabel(discord_frame, text="Discord", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
+        )
+        ctk.CTkCheckBox(discord_frame, text="koutiku をDiscordへ送信", variable=self.chk_discord_var).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=8, pady=2
+        )
+        ctk.CTkLabel(discord_frame, text="Webhook URL").grid(row=2, column=0, sticky="e", padx=8, pady=(4, 8))
+        self.discord_url_entry = ctk.CTkEntry(discord_frame, width=260, textvariable=self.discord_url_var)
+        self.discord_url_entry.grid(row=2, column=1, sticky="we", padx=(0, 8), pady=(4, 8))
 
         # Controls
         control_frame = ctk.CTkFrame(sidebar, corner_radius=10)
-        control_frame.grid(row=2, column=0, sticky="we", padx=8, pady=6)
+        control_frame.grid(row=3, column=0, sticky="we", padx=8, pady=6)
         ctk.CTkLabel(control_frame, text="Controls", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
@@ -167,7 +184,7 @@ class App(ctk.CTk):
 
         # Theme
         theme_frame = ctk.CTkFrame(sidebar, corner_radius=10)
-        theme_frame.grid(row=3, column=0, sticky="we", padx=8, pady=(6, 12))
+        theme_frame.grid(row=4, column=0, sticky="we", padx=8, pady=(6, 12))
         ctk.CTkLabel(theme_frame, text="Theme", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
@@ -567,9 +584,16 @@ class App(ctk.CTk):
         if self.chk_syouhai_var.get():
             self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger, source_name=src)
             self._th_syouhai.start()
+        if self.chk_discord_var.get():
+            url = (self.discord_url_var.get() or "").strip()
+            if url:
+                self._th_discord = DiscordWebhookThread(base_dir, url, logger)
+                self._th_discord.start()
+            else:
+                self._append_log("[Discord] Webhook URL が未設定のため開始しません")
 
     def _stop_threads(self) -> None:
-        for th in (self._th_double, self._th_rkaisi, self._th_syouhai):
+        for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord):
             try:
                 if th and th.is_alive():
                     th.stop()  # type: ignore[attr-defined]
@@ -577,7 +601,7 @@ class App(ctk.CTk):
                 pass
 
         # Optional join to let threads exit promptly
-        for th in (self._th_double, self._th_rkaisi, self._th_syouhai):
+        for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord):
             try:
                 if th:
                     th.join(timeout=1.0)
@@ -667,6 +691,8 @@ class App(ctk.CTk):
             "ENABLE_SYOUHAI": "true" if self.chk_syouhai_var.get() else "false",
             "OBS_SCENE": self.scene_opt.get().strip() if getattr(self, "scene_opt", None) else os.getenv("OBS_SCENE", ""),
             "OBS_SOURCE": self.source_opt.get().strip() if getattr(self, "source_opt", None) else os.getenv("OBS_SOURCE", "Capture1"),
+            "ENABLE_DISCORD": "true" if self.chk_discord_var.get() else "false",
+            "DISCORD_WEBHOOK_URL": (self.discord_url_var.get() or "").strip(),
         }
 
         # Read existing lines to preserve comments/unknown keys
