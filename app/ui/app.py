@@ -774,12 +774,30 @@ class App(ctk.CTk):
                     parts.append(0)
                 return tuple(parts[:3])
 
+            def extract_version(text: str) -> str:
+                """Extract a semantic-like version (e.g. 1.2 or 1.2.3) from arbitrary text.
+                Accepts tags like v1.2.3, ver1.2.3, version-1.2, etc.
+                """
+                try:
+                    if not text:
+                        return ""
+                    m = re.search(r"(?i)(?:^|[^\d])((\d+)\.(\d+)(?:\.(\d+))?)", str(text))
+                    if not m:
+                        return ""
+                    return m.group(1)
+                except Exception:
+                    return ""
+
             latest_ver = str(feed.get("version") or feed.get("win", {}).get("version") or "")
             if parse_ver(latest_ver) <= parse_ver(cur):
-                # Try GitHub Releases JSON format
+                # Try GitHub Releases JSON format (tag/name), support prefixes like 'ver'
                 tag = str(feed.get("tag_name") or "")
-                if tag:
-                    latest_ver = tag.lstrip("vV")
+                cand = extract_version(tag)
+                if not cand:
+                    name = str(feed.get("name") or "")
+                    cand = extract_version(name)
+                if cand:
+                    latest_ver = cand
                 if not latest_ver or parse_ver(latest_ver) <= parse_ver(cur):
                     self._append_log("[更新] 最新バージョンです")
                     return
@@ -793,7 +811,8 @@ class App(ctk.CTk):
             if not url and isinstance(feed.get("assets"), list):
                 pat = (os.getenv("UPDATE_ASSET_PATTERN", "") or "").strip()
                 chosen = None
-                for a in feed.get("assets", []):
+                assets = feed.get("assets", [])
+                for a in assets:
                     try:
                         name = str(a.get("name") or "")
                         if not name.lower().endswith(".exe"):
@@ -808,6 +827,13 @@ class App(ctk.CTk):
                 if chosen:
                     url = chosen.get("browser_download_url") or url
                     sha256 = sha256 or chosen.get("sha256")
+                else:
+                    # Helpful log: show why asset selection failed
+                    if not assets:
+                        self._append_log("[更新] 最新リリースにアセットがありません (.exe が必要)")
+                    else:
+                        self._append_log(
+                            f"[更新] .exe アセットが見つかりません (パターン='{pat}' でフィルタ)")
             if not url:
                 self._append_log("[更新] Windows 用URLがありません")
                 return
