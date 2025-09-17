@@ -825,6 +825,7 @@ class App(ctk.CTk):
             url = win_info.get("url") or feed.get("url")
             sha256 = win_info.get("sha256") or feed.get("sha256")
             notes = feed.get("notes") or feed.get("body") or ""
+            asset_api_url = None
 
             # GitHub Releases fallback: pick .exe asset (optionally filter by name)
             if not url and isinstance(feed.get("assets"), list):
@@ -853,6 +854,11 @@ class App(ctk.CTk):
                 if chosen:
                     url = chosen.get("browser_download_url") or url
                     sha256 = sha256 or chosen.get("sha256")
+                    try:
+                        # GitHub Release Asset API URL (requires auth for download)
+                        asset_api_url = chosen.get("url") or None
+                    except Exception:
+                        asset_api_url = None
                 else:
                     # Helpful log: show why asset selection failed
                     if not assets:
@@ -873,7 +879,7 @@ class App(ctk.CTk):
                     pass
                 msg = f"新しいバージョン {latest_ver} が利用可能です。\n今すぐ更新して再起動しますか？\n\n{notes}".strip()
                 if mb.askyesno("アップデート", msg):
-                    self.after(0, lambda: self._perform_update(url2, sha256))
+                    self.after(0, lambda: self._perform_update(url2, sha256, asset_api_url))
             try:
                 self.after(0, ask_update)
             except Exception:
@@ -881,7 +887,7 @@ class App(ctk.CTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _perform_update(self, url: str, sha256: Optional[str]) -> None:
+    def _perform_update(self, url: str, sha256: Optional[str], asset_api_url: Optional[str] = None) -> None:
         import urllib.request, urllib.error, tempfile, hashlib, shutil, sys, subprocess, time, os, re
         self._append_log("[更新] ダウンロードを開始します...")
         tmpdir = tempfile.mkdtemp(prefix="upd_")
@@ -955,9 +961,37 @@ class App(ctk.CTk):
         # Basic sanity check: downloaded file is a valid PE executable
         ok, reason = _is_valid_windows_exe(new_path)
         if not ok:
-            mb.showerror("アップデート", f"ダウンロードしたファイルが実行可能ではありません: {reason}\nURL: {url}")
-            self._append_log(f"[更新] 無効な実行ファイル: {reason}")
-            return
+            # If JSON/HTML received and we have a GitHub Asset API URL with token, retry via API URL
+            try:
+                token = (os.getenv("GITHUB_TOKEN", "") or "").strip()
+            except Exception:
+                token = ""
+            need_api_retry = False
+            try:
+                with open(new_path, "rb") as f:
+                    sniff = f.read(64).lstrip().lower()
+                if (sniff.startswith(b"<") or sniff.startswith(b"{") or sniff.startswith(b"[")):
+                    need_api_retry = True
+            except Exception:
+                pass
+            if (not ok) and asset_api_url and token and need_api_retry:
+                try:
+                    self._append_log("[更新] 再試行: Asset API 経由でダウンロードします")
+                    dl_headers2 = {
+                        "User-Agent": "obs-screenshot-tool",
+                        "Accept": "application/octet-stream",
+                        "Authorization": f"Bearer {token}",
+                    }
+                    req2 = urllib.request.Request(asset_api_url, headers=dl_headers2)
+                    with urllib.request.urlopen(req2, timeout=60) as resp, open(new_path, "wb") as f:
+                        shutil.copyfileobj(resp, f)
+                    ok, reason = _is_valid_windows_exe(new_path)
+                except Exception as e:
+                    self._append_log(f"[更新] 再試行失敗: {e}")
+            if not ok:
+                mb.showerror("アップデート", f"ダウンロードしたファイルが実行可能ではありません: {reason}\nURL: {url}")
+                self._append_log(f"[更新] 無効な実行ファイル: {reason}")
+                return
 
         # If frozen (running as exe), replace self via a temporary batch
         frozen = getattr(sys, "frozen", False)
