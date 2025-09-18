@@ -1008,7 +1008,10 @@ class App(ctk.CTk):
                 self._append_log(f"[更新] 無効な実行ファイル: {reason}")
                 return
 
-        # Extra: Ensure this looks like a PyInstaller onefile exe (has embedded PKG/MEI cookie)
+        # Extra: (Optional) Check for PyInstaller onefile cookie.
+        # Some distributions may ship an installer EXE or a PyInstaller onedir build,
+        # which do not contain an embedded CArchive at the end of the file. In those
+        # cases, rejecting the update here is too strict. Default is to WARN only.
         def _has_pyinstaller_cookie(path: str) -> bool:
             try:
                 magic = b"MEI\x0e\x0b\x0c\x0b\x0e"  # PyInstaller CArchive cookie magic
@@ -1022,14 +1025,22 @@ class App(ctk.CTk):
             except Exception:
                 return False
 
+        require_pyi = str(os.getenv("REQUIRE_PYI_COOKIE", "")).strip().lower() in ("1", "true", "yes", "on")
         if not _has_pyinstaller_cookie(new_path):
-            msg = "ダウンロードした実行ファイルに PyInstaller の埋め込みアーカイブが見つかりません。\nダウンロードが不完全か壊れている可能性があります。"
-            self._append_log("[更新] PyInstaller PKG が見つかりません (中止)")
-            try:
-                mb.showerror("アップデート", msg)
-            except Exception:
-                pass
-            return
+            if require_pyi:
+                msg = (
+                    "ダウンロードした実行ファイルに PyInstaller の埋め込みアーカイブが見つかりません。\n"
+                    "ダウンロードが不完全か壊れている可能性があります。"
+                )
+                self._append_log("[更新] PyInstaller PKG が見つかりません (中止)")
+                try:
+                    mb.showerror("アップデート", msg)
+                except Exception:
+                    pass
+                return
+            else:
+                # Proceed but note in the log for transparency
+                self._append_log("[更新] PyInstaller PKG が見つかりませんが続行します (インストーラ/onedir想定)")
 
         # If frozen (running as exe), replace self via a temporary batch
         frozen = getattr(sys, "frozen", False)
