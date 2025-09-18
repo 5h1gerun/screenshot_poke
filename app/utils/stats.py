@@ -13,7 +13,13 @@ def _results_csv_path(base_dir: str) -> str:
     return os.path.join(base_dir, "koutiku", "_results.csv")
 
 
-def append_result(base_dir: str, image_name: str, result: str, ts: Optional[float] = None) -> None:
+def append_result(
+    base_dir: str,
+    image_name: str,
+    result: str,
+    ts: Optional[float] = None,
+    season: Optional[str] = None,
+) -> None:
     """Append a result row to CSV: timestamp,image,result
 
     - timestamp: ISO-8601 local time
@@ -23,14 +29,32 @@ def append_result(base_dir: str, image_name: str, result: str, ts: Optional[floa
     path = _results_csv_path(base_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     exists = os.path.exists(path)
+    header: List[str] = ["timestamp", "image", "result"]
+    if exists:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                first = f.readline()
+                if first:
+                    cols = [c.strip() for c in first.strip().split(",")]
+                    if "season" in cols:
+                        header = cols
+        except Exception:
+            pass
+    else:
+        # New file: include season column if provided
+        if season is not None:
+            header = ["timestamp", "image", "result", "season"]
     t = dt.datetime.fromtimestamp(ts or dt.datetime.now().timestamp())
     ts_str = t.strftime("%Y-%m-%d %H:%M:%S")
     try:
         with open(path, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if not exists:
-                w.writerow(["timestamp", "image", "result"])  # header
-            w.writerow([ts_str, image_name, result])
+                w.writerow(header)  # header
+            row = [ts_str, image_name, result]
+            if "season" in header:
+                row.append(season or "")
+            w.writerow(row)
     except Exception:
         # Best-effort; swallow to avoid crashing threads
         pass
@@ -55,6 +79,35 @@ def load_results(base_dir: str) -> List[Tuple[dt.datetime, str, str]]:
     except Exception:
         return []
     return out
+
+
+def load_results_with_season(base_dir: str) -> List[Tuple[dt.datetime, str, str, str]]:
+    out: List[Tuple[dt.datetime, str, str, str]] = []
+    path = _results_csv_path(base_dir)
+    if not os.path.exists(path):
+        return out
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            r = csv.DictReader(f)
+            has_season = "season" in (r.fieldnames or [])
+            for row in r:
+                try:
+                    t = dt.datetime.strptime(row.get("timestamp", ""), "%Y-%m-%d %H:%M:%S")
+                    img = str(row.get("image", ""))
+                    res = str(row.get("result", ""))
+                    season = str(row.get("season", "")) if has_season else ""
+                    out.append((t, img, res, season))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return out
+
+
+def list_seasons(base_dir: str) -> List[str]:
+    rows = load_results_with_season(base_dir)
+    s = sorted({season for (_t, _i, _r, season) in rows if season}, key=lambda x: x.lower())
+    return s
 
 
 def aggregate_by_day(
@@ -124,6 +177,36 @@ def add_result_tag(base_dir: str, image_name: str, result: str) -> None:
             pass
 
 
+def add_tags(base_dir: str, image_name: str, tags: List[str]) -> None:
+    """Add multiple tags to the image entry in koutiku/_tags.json (deduped)."""
+    tags_path = os.path.join(base_dir, "koutiku", "_tags.json")
+    os.makedirs(os.path.dirname(tags_path), exist_ok=True)
+    data: Dict[str, List[str]] = {}
+    try:
+        with open(tags_path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(v, list):
+                        data[k] = [str(x) for x in v if x]
+    except Exception:
+        data = {}
+    data.setdefault(image_name, [])
+    cur = set(data[image_name])
+    for t in tags:
+        t2 = str(t or "").strip()
+        if not t2:
+            continue
+        if t2 not in cur:
+            data[image_name].append(t2)
+            cur.add(t2)
+    try:
+        with open(tags_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def render_winrate_chart(
     per_day: List[Tuple[dt.date, int, int, int]],
     size: Tuple[int, int] = (900, 320),
@@ -186,4 +269,3 @@ def render_winrate_chart(
         label = d.strftime("%m/%d")
         draw.text((x - 12, y0 + 6), label, fill=(60, 60, 60))
     return img
-

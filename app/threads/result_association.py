@@ -32,6 +32,7 @@ class ResultAssociationThread(threading.Thread):
         default_win_timeout: float = 0.0,
         obs: Optional[ObsClient] = None,
         text_source: str = "sensekiText1",
+        season: Optional[str] = None,
     ) -> None:
         super().__init__(daemon=True)
         self._base = base_dir
@@ -47,6 +48,14 @@ class ResultAssociationThread(threading.Thread):
         self._first_unpaired_ts: Optional[float] = None
         self._obs = obs
         self._text_source = text_source
+        # Normalize season for tagging and CSV:
+        # - If only digits like "13", convert to "S13"
+        # - Else keep as-is
+        sraw = (season or "").strip()
+        if sraw.isdigit() and sraw:
+            self._season = f"S{sraw}"
+        else:
+            self._season = sraw
 
     def stop(self) -> None:
         self._stop.set()
@@ -136,11 +145,14 @@ class ResultAssociationThread(threading.Thread):
 
             # Append to CSV and tag file
             try:
-                stats_utils.append_result(self._base, name, result, ts)
+                stats_utils.append_result(self._base, name, result, ts, season=self._season)
             except Exception as e:
                 self._log.log(f"[結果連携] CSV 追記失敗: {e}")
             try:
-                stats_utils.add_result_tag(self._base, name, result)
+                tags = [result]
+                if self._season:
+                    tags.append(f"season:{self._season}")
+                stats_utils.add_tags(self._base, name, tags)
             except Exception as e:
                 self._log.log(f"[結果連携] タグ付け失敗: {e}")
             self._log.log(f"[結果連携] {name} -> {result}")

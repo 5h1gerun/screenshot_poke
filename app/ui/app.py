@@ -151,6 +151,12 @@ class App(ctk.CTk):
         self.source_opt.grid(row=6, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="更新", command=self._refresh_obs_lists, width=80).grid(row=6, column=2, padx=8, pady=4)
 
+        # Season (for per-season stats)
+        ctk.CTkLabel(obs_frame, text="Season").grid(row=7, column=0, sticky="e", padx=8, pady=4)
+        self.season_entry = ctk.CTkEntry(obs_frame, width=160)
+        self.season_entry.insert(0, os.getenv("SEASON", ""))
+        self.season_entry.grid(row=7, column=1, sticky="w", padx=8, pady=4)
+
         # Scripts
         script_frame = ctk.CTkFrame(sidebar, corner_radius=10)
         script_frame.grid(row=1, column=0, sticky="we", padx=8, pady=6)
@@ -622,6 +628,7 @@ class App(ctk.CTk):
                 default_win_timeout=5.0,
                 obs=self._obs,
                 text_source="sensekiText1",
+                season=(self.season_entry.get().strip() if getattr(self, "season_entry", None) else ""),
             )
             self._th_result_assoc.start()
         if self.chk_discord_var.get():
@@ -674,9 +681,16 @@ class App(ctk.CTk):
         self._stats_end = ctk.CTkEntry(ctrl, width=120)
         self._stats_end.grid(row=0, column=3)
 
-        ctk.CTkButton(ctrl, text="Reload", width=80, command=self._refresh_stats).grid(row=0, column=5, padx=(8, 6))
-        ctk.CTkButton(ctrl, text="Open CSV", width=90, command=self._open_results_csv).grid(row=0, column=6, padx=(0, 6))
-        ctk.CTkButton(ctrl, text="Save Chart", width=100, command=self._save_stats_chart).grid(row=0, column=7, padx=(0, 8))
+        # Season filter
+        ctk.CTkLabel(ctrl, text="Season").grid(row=0, column=4, padx=(12, 6))
+        seasons = self._list_seasons()
+        self._stats_season_opt = ctk.CTkOptionMenu(ctrl, values=["[All]"] + seasons, width=120)
+        self._stats_season_opt.set(os.getenv("SEASON", "[All]") or "[All]")
+        self._stats_season_opt.grid(row=0, column=5)
+
+        ctk.CTkButton(ctrl, text="Reload", width=80, command=self._refresh_stats).grid(row=0, column=6, padx=(8, 6))
+        ctk.CTkButton(ctrl, text="Open CSV", width=90, command=self._open_results_csv).grid(row=0, column=7, padx=(0, 6))
+        ctk.CTkButton(ctrl, text="Save Chart", width=100, command=self._save_stats_chart).grid(row=0, column=8, padx=(0, 8))
 
         self._stats_summary = ctk.CTkLabel(parent, text="", anchor="w")
         self._stats_summary.grid(row=1, column=0, sticky="we", padx=12)
@@ -702,10 +716,19 @@ class App(ctk.CTk):
 
     def _refresh_stats(self) -> None:
         base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
-        rows = stats_utils.load_results(base_dir)
+        rows4 = stats_utils.load_results_with_season(base_dir)
         import datetime as _dt
         start = self._parse_date(self._stats_start.get()) if getattr(self, "_stats_start", None) else None
         end = self._parse_date(self._stats_end.get()) if getattr(self, "_stats_end", None) else None
+        # Season filter
+        season_sel = None
+        try:
+            cur = self._stats_season_opt.get()
+            season_sel = None if (not cur or cur == "[All]") else cur
+        except Exception:
+            season_sel = None
+        rows4 = [x for x in rows4 if (not season_sel or x[3] == season_sel)]
+        rows = [(t, i, r) for (t, i, r, _s) in rows4]
         per_day = stats_utils.aggregate_by_day(rows, start, end)
         win, lose, dc, wr = stats_utils.compute_totals([(t, i, r) for (t, i, r) in rows if (not start or t.date() >= start) and (not end or t.date() <= end)])
         self._stats_summary.configure(text=f"Win: {win}  Lose: {lose}  DC: {dc}  WinRate: {wr:.1f}%")
@@ -718,6 +741,23 @@ class App(ctk.CTk):
         except Exception:
             # fallback: save temp and show message
             self._stats_chart_label.configure(text="チャートの描画に失敗")
+        # Update season list in option menu
+        try:
+            seasons = self._list_seasons()
+            cur = self._stats_season_opt.get()
+            values = ["[All]"] + seasons
+            self._stats_season_opt.configure(values=values)
+            if cur not in values:
+                self._stats_season_opt.set("[All]")
+        except Exception:
+            pass
+
+    def _list_seasons(self) -> List[str]:
+        base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
+        try:
+            return stats_utils.list_seasons(base_dir)
+        except Exception:
+            return []
 
     def _open_results_csv(self) -> None:
         base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
@@ -823,6 +863,7 @@ class App(ctk.CTk):
             "OBS_PORT": str(self.port_entry.get()).strip(),
             "OBS_PASSWORD": self.pass_entry.get(),
             "BASE_DIR": base_dir_to_save,
+            "SEASON": (self.season_entry.get().strip() if getattr(self, "season_entry", None) else os.getenv("SEASON", "")),
             "APP_APPEARANCE": self._appearance,
             "APP_THEME": self._accent_theme,
             "ENABLE_DOUBLE": "true" if self.chk_double_var.get() else "false",
