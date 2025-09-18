@@ -41,7 +41,7 @@ class App(ctk.CTk):
         ctk.set_appearance_mode(self._appearance)
         ctk.set_default_color_theme(self._accent_theme)
 
-        self.title("OBS Screenshot/Template Tool")
+        self.title(f"OBS Screenshot/Template Tool v{APP_VERSION}")
         self.geometry("1200x800")
 
         # Runtime state
@@ -102,7 +102,7 @@ class App(ctk.CTk):
         self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
 
-        title = ctk.CTkLabel(self, text="OBS Screenshot / Template Tool", font=ctk.CTkFont(size=18, weight="bold"))
+        title = ctk.CTkLabel(self, text=f"OBS Screenshot / Template Tool v{APP_VERSION}", font=ctk.CTkFont(size=18, weight="bold"))
         title.grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(12, 0))
 
         sidebar = ctk.CTkFrame(self, corner_radius=10)
@@ -952,7 +952,8 @@ class App(ctk.CTk):
                             try:
                                 if not text:
                                     return ""
-                                mm = re.search(r"(?i)(?:^|[^\\d])((\\d+)\\.(\\d+)(?:\\.(\\d+))?)", str(text))
+                                # Extract 1.2 or 1.2.3 from strings like v1.2.3 / ver1.2.3
+                                mm = re.search(r"(?i)(?:^|[^\d])((\d+)\.(\d+)(?:\.(\d+))?)", str(text))
                                 return mm.group(1) if mm else ""
                             except Exception:
                                 return ""
@@ -968,10 +969,13 @@ class App(ctk.CTk):
                         while len(parts) < 3:
                             parts.append(0)
                         return tuple(parts[:3])
-                    if latest_ver and _pver(latest_ver) <= _pver(cur):
-                        self._append_log("[更新] 最新版を利用中です")
-                        return
-                    self._append_log(f"[更新] 新しいバージョンが見つかりました: {latest_ver or 'latest'} — リリースページを開きます")
+                    if latest_ver:
+                        if _pver(latest_ver) <= _pver(cur):
+                            self._append_log("[更新] 最新版を利用中です")
+                            return
+                        self._append_log(f"[更新] 新しいバージョンが見つかりました: {latest_ver} — リリースページを開きます")
+                    else:
+                        self._append_log("[更新] バージョン確認に失敗: リリースページを開きます")
                     try:
                         webbrowser.open(release_page, new=2)
                     except Exception:
