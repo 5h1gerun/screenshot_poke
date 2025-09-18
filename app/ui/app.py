@@ -43,6 +43,16 @@ class App(ctk.CTk):
 
         self.title(f"OBS Screenshot/Template Tool v{APP_VERSION}")
         self.geometry("1200x800")
+        # Try to set window icon when running from source (PNG). In frozen exe, the
+        # embedded .ico from PyInstaller is used automatically on Windows.
+        try:
+            if not getattr(sys, "frozen", False):
+                from pathlib import Path as _P
+                _png = _P(__file__).resolve().parents[2] / "icon.png"
+                if _png.exists():
+                    self.iconphoto(True, tk.PhotoImage(file=str(_png)))
+        except Exception:
+            pass
 
         # Runtime state
         self._obs: Optional[ObsClient] = None

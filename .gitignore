@@ -29,6 +29,7 @@ koutiku/**/*.webp
 koutiku/*.json
 !koutiku/readme.md
 
+icon.png
 build/OBS-Screenshot-Tool
 **/build/
 *.spec

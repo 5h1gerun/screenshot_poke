@@ -27,6 +27,22 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install pyinstaller
 
+$buildDir = 'build'
+if (-not (Test-Path $buildDir)) {
+    New-Item -ItemType Directory -Path $buildDir | Out-Null
+}
+
+$iconIco = Join-Path $buildDir 'app_icon.ico'
+if (Test-Path 'icon.png') {
+    Write-Host "Generating ICO from icon.png..."
+    try {
+        # Use Pillow to convert PNG to multi-size ICO for Windows
+        python -c "from PIL import Image; im=Image.open('icon.png').convert('RGBA'); im.save(r'build/app_icon.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])" 2>$null
+    } catch {
+        Write-Warning "Failed to generate ICO from icon.png. Ensure Pillow is installed."
+    }
+}
+
 $opts = @()
 if ($OneFile) { $opts += "--onefile" }
 if ($OneFile -and $RuntimeTmp) { $opts += @('--runtime-tmpdir', $RuntimeTmp) }
@@ -70,6 +86,14 @@ if ($Console) {
     $pyArgs += @('--console')
 } else {
     $pyArgs += @('--noconsole','--windowed')
+}
+# Use absolute path for --icon to avoid spec/workpath double-prefix issues
+$iconAbs = $null
+if (Test-Path $iconIco) {
+    try { $iconAbs = (Resolve-Path $iconIco).Path } catch { $iconAbs = $null }
+}
+if ($iconAbs) {
+    $pyArgs += @('--icon', $iconAbs)
 }
 $pyArgs = $pyArgs + $opts + @(
     '--hidden-import', 'obswebsocket',
