@@ -618,7 +618,18 @@ class App(ctk.CTk):
 
         src = self.source_opt.get().strip() or "Capture1"
         if self.chk_double_var.get():
-            self._th_double = DoubleBattleThread(self._obs, base_dir, logger, source_name=src)
+            # Capture interval for DoubleBattle (ms). Default = 1000 (slow), 0 = continuous.
+            try:
+                _dbl_ms = float(os.getenv("DOUBLE_CAPTURE_INTERVAL_MS", "1000") or 1000)
+            except Exception:
+                _dbl_ms = 1000.0
+            self._th_double = DoubleBattleThread(
+                self._obs,
+                base_dir,
+                logger,
+                source_name=src,
+                capture_interval_sec=max(0.0, _dbl_ms / 1000.0),
+            )
             self._th_double.start()
         if self.chk_rkaisi_var.get():
             handantmp = os.path.join(base_dir, "handantmp")
@@ -630,13 +641,14 @@ class App(ctk.CTk):
         if self.chk_syouhai_var.get():
             self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger, source_name=src, result_queue=self._results_queue)
             self._th_syouhai.start()
-            # Start association thread to tie new images to results. Use small timeout
-            # to default pending images to 'win' if lose/DC is not detected.
+            # Start association thread to tie new images to results. Default-win fallback
+            # is disabled by default to avoid false +1 on first match.
+            # You can enable it via env var ASSOC_DEFAULT_WIN_TIMEOUT (seconds).
             self._th_result_assoc = ResultAssociationThread(
                 base_dir,
                 self._results_queue,
                 logger,
-                default_win_timeout=5.0,
+                default_win_timeout=float(os.getenv("ASSOC_DEFAULT_WIN_TIMEOUT", "0") or 0),
                 obs=self._obs,
                 text_source="sensekiText1",
                 season=(self.season_entry.get().strip() if getattr(self, "season_entry", None) else ""),

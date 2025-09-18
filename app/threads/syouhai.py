@@ -51,10 +51,14 @@ class SyouhaiThread(threading.Thread):
 
         self._counts = {"win": 0, "lose": 0, "disconnect": 0}
         self._text_source = "sensekiText1"
-        self._threshold = 0.2
-        # Simple cooldown to avoid double counting while overlays persist
-        self._cooldown_sec = 10.0
-        self._last_emit_ts = 0.0
+        # Threshold is tunable via env var; lower is more sensitive
+        try:
+            import os as _os
+            self._threshold = float((_os.getenv("SYOUHAI_THRESHOLD", "0.2") or 0.2))
+        except Exception:
+            self._threshold = 0.2
+        # Edge-triggering to avoid double counting without sleeps
+        self._prev_label: Optional[str] = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -75,8 +79,12 @@ class SyouhaiThread(threading.Thread):
         scene = cv2.imread(self._scene_path)
         if scene is None:
             self._log.log("[勝敗検出] スクリーンショットの読み込みに失敗")
-            if self._stop.wait(0.5):
-                return
+            # No rest mode with minimal backoff to avoid hammering OBS
+            try:
+                if self._stop.wait(0.01):
+                    return
+            except Exception:
+                pass
             return
 
         h, w = scene.shape[:2]
@@ -115,34 +123,28 @@ class SyouhaiThread(threading.Thread):
         elif is_win:
             result = "win"
 
-        if result is not None:
-            now = time.time()
-            if now - self._last_emit_ts < self._cooldown_sec:
-                # Cooldown to avoid double counting while overlay persists
-                if self._stop.wait(0.5):
-                    return
-                return
-            self._last_emit_ts = now
+        # Edge trigger: emit only when label changes from previous
+        if result != self._prev_label:
+            if result is not None:
+                now = time.time()
+                self._counts[result] += 1
+                jp = {"win": "勝ち", "lose": "負け", "disconnect": "回線切断"}.get(result, result)
+                self._log.log(f"[勝敗検出] {jp} を検出 → {self._counts[result]}")
 
-            self._counts[result] += 1
-            jp = {"win": "勝ち", "lose": "負け", "disconnect": "回線切断"}.get(result, result)
-            self._log.log(f"[勝敗検出] {jp} を検出 → {self._counts[result]}")
-
-            # Update OBS text source with current counters
-            text = f"Win: {self._counts['win']} - Lose: {self._counts['lose']} - DC: {self._counts['disconnect']}"
-            try:
-                self._obs.update_text_source(self._text_source, text)
-                self._log.log(f"[勝敗検出] テキストを更新: {text}")
-            except Exception as e:
-                self._log.log(f"[勝敗検出] テキスト更新に失敗: {e}")
-
-            # Publish to result queue for association with new images
-            if self._result_queue is not None:
+                # Update OBS text source with current counters
+                text = f"Win: {self._counts['win']} - Lose: {self._counts['lose']} - DC: {self._counts['disconnect']}"
                 try:
-                    self._result_queue.put({"timestamp": now, "result": result}, timeout=0.1)
-                except Exception:
-                    pass
+                    self._obs.update_text_source(self._text_source, text)
+                    self._log.log(f"[勝敗検出] テキストを更新: {text}")
+                except Exception as e:
+                    self._log.log(f"[勝敗検出] テキスト更新に失敗: {e}")
 
-            if self._stop.wait(self._cooldown_sec):
-                return
+                # Publish to result queue for association with new images
+                if self._result_queue is not None:
+                    try:
+                        self._result_queue.put({"timestamp": now, "result": result}, timeout=0.1)
+                    except Exception:
+                        pass
+            # Update previous label (None when nothing detected)
+            self._prev_label = result
 

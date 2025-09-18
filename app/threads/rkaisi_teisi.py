@@ -86,7 +86,7 @@ class RkaisiTeisiThread(threading.Thread):
             self._log.log("[録開始/停止] 'masu1' 検出 → 録画開始")
             self._obs.start_recording()
             self._recording = True
-            if self._stop.wait(300):
+            if self._stop.wait(140):
                 return
             return
 
