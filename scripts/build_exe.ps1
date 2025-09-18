@@ -1,6 +1,8 @@
 param(
     [switch]$OneFile = $true,
-    [string]$Name = "OBS-Screenshot-Tool"
+    [string]$Name = "OBS-Screenshot-Tool",
+    # UPX can cause DLL loading issues on some environments. Disable by default.
+    [switch]$NoUPX = $true
 )
 
 Write-Host "Setting up venv and installing deps..."
@@ -15,6 +17,7 @@ pip install pyinstaller
 
 $opts = @()
 if ($OneFile) { $opts += "--onefile" }
+if ($NoUPX) { $opts += "--noupx" }
 
 pyinstaller --noconfirm --clean `
   --name $Name `
