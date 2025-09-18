@@ -26,6 +26,7 @@ class DoubleBattleThread(threading.Thread):
         base_dir: str,
         logger: Optional[UiLogger] = None,
         source_name: str = "Capture1",
+        capture_interval_sec: float = 2.0,
     ) -> None:
         super().__init__(daemon=True)
         self._obs = obs
@@ -33,6 +34,11 @@ class DoubleBattleThread(threading.Thread):
         self._log = logger or UiLogger()
         self._stop = threading.Event()
         self._source = source_name
+        # Loop sleep between iterations. 0.0 for "no rest" continuous capture.
+        try:
+            self._interval = float(capture_interval_sec or 0)
+        except Exception:
+            self._interval = 0.0
 
         # Paths
         self._handan = os.path.join(base_dir, "handantmp")
@@ -64,8 +70,8 @@ class DoubleBattleThread(threading.Thread):
         try:
             while not self._stop.is_set():
                 self._iteration()
-                # Sleep but remain responsive to stop
-                if self._stop.wait(2):
+                # Sleep but remain responsive to stop (0 for no rest)
+                if self._stop.wait(self._interval):
                     return
         except Exception as e:
             self._log.log(f"[ダブルバトル] エラー: {e}")

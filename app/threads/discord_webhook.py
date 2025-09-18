@@ -59,7 +59,26 @@ class DiscordWebhookThread(threading.Thread):
 
         while not self._stop.is_set():
             try:
-                for name in sorted(os.listdir(self._koutiku)):
+                # Prefer newest-first by mtime so fresh screenshots go out promptly
+                try:
+                    entries = []
+                    with os.scandir(self._koutiku) as it:
+                        for e in it:
+                            if not e.is_file():
+                                continue
+                            if os.path.splitext(e.name)[1].lower() not in exts:
+                                continue
+                            try:
+                                mt = e.stat().st_mtime
+                            except Exception:
+                                mt = 0.0
+                            entries.append((mt, e.name))
+                    names = [n for (_mt, n) in sorted(entries, key=lambda x: x[0], reverse=True)]
+                except Exception:
+                    # Fallback to name sort if scandir/stat fails
+                    names = sorted(os.listdir(self._koutiku))
+
+                for name in names:
                     if self._stop.is_set():
                         return
                     path = os.path.join(self._koutiku, name)
@@ -103,8 +122,17 @@ class DiscordWebhookThread(threading.Thread):
             return False
 
         try:
-            req = request.Request(self._url, data=body)
+            # Discord may reject requests without a UA; also prefer wait=true for 2xx body
+            url = self._url
+            if "?" in url:
+                if "wait=" not in url:
+                    url = url + "&wait=true"
+            else:
+                url = url + "?wait=true"
+            req = request.Request(url, data=body)
             req.add_header("Content-Type", ctype)
+            req.add_header("User-Agent", "obs-screenshot-tool")
+            req.add_header("Accept", "application/json")
             with request.urlopen(req, timeout=15) as resp:
                 code = getattr(resp, "status", None) or getattr(resp, "code", 0)
                 if 200 <= int(code) < 300:
@@ -114,6 +142,22 @@ class DiscordWebhookThread(threading.Thread):
                     self._log.log(f"[Discord] 送信失敗 (HTTP {code}): {name}")
                     return False
         except Exception as e:  # includes HTTPError/URLError
+            # Try to extract HTTP status/body for diagnostics
+            try:
+                if isinstance(e, error.HTTPError):  # type: ignore[attr-defined]
+                    code = getattr(e, "code", None)
+                    reason = getattr(e, "reason", "")
+                    detail = ""
+                    try:
+                        data = e.read()
+                        if data:
+                            detail = data.decode("utf-8", errors="ignore")[:300]
+                    except Exception:
+                        pass
+                    self._log.log(f"[Discord] 送信エラー (HTTP {code} {reason}): {detail}")
+                    return False
+            except Exception:
+                pass
             self._log.log(f"[Discord] 送信エラー: {e}")
             return False
 
