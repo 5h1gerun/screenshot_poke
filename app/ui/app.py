@@ -18,6 +18,7 @@ import tkinter.simpledialog as sd
 
 import customtkinter as ctk
 from PIL import Image
+import webbrowser
 
 from app.obs_client import ObsClient
 from app.threads.double_battle import DoubleBattleThread
@@ -916,6 +917,84 @@ class App(ctk.CTk):
         def worker():
             import json, hashlib, tempfile, urllib.request, urllib.error, platform, shutil, time, os, re
             cur = APP_VERSION
+            # Manual update style: open latest release page in browser
+            try:
+                owner_repo = None
+                m = re.match(r"^github://([^/]+)/([^/]+)$", feed_url, re.IGNORECASE)
+                if m:
+                    owner_repo = f"{m.group(1)}/{m.group(2)}"
+                if owner_repo is None:
+                    m = re.match(r"^https?://github\.com/([^/]+)/([^/]+)", feed_url, re.IGNORECASE)
+                    if m:
+                        owner_repo = f"{m.group(1)}/{m.group(2)}"
+                if owner_repo is None:
+                    m = re.match(r"^https?://api\.github\.com/repos/([^/]+/[^/]+)/", feed_url, re.IGNORECASE)
+                    if m:
+                        owner_repo = m.group(1)
+                if owner_repo:
+                    release_page = f"https://github.com/{owner_repo}/releases/latest"
+                    latest_ver = ""
+                    try:
+                        headers = {
+                            "User-Agent": "obs-screenshot-tool",
+                            "Accept": "application/vnd.github+json, application/json;q=0.9",
+                        }
+                        token = (os.getenv("GITHUB_TOKEN", "") or "").strip()
+                        if token:
+                            headers["Authorization"] = f"Bearer {token}"
+                        req = urllib.request.Request(
+                            f"https://api.github.com/repos/{owner_repo}/releases/latest", headers=headers
+                        )
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            data = resp.read()
+                        feed = json.loads(data.decode("utf-8", errors="ignore"))
+                        def _extract_version(text: str) -> str:
+                            try:
+                                if not text:
+                                    return ""
+                                mm = re.search(r"(?i)(?:^|[^\\d])((\\d+)\\.(\\d+)(?:\\.(\\d+))?)", str(text))
+                                return mm.group(1) if mm else ""
+                            except Exception:
+                                return ""
+                        tag = str(feed.get("tag_name") or "")
+                        latest_ver = _extract_version(tag) or _extract_version(str(feed.get("name") or "")) or _extract_version(str(feed.get("body") or ""))
+                    except Exception as e:
+                        self._append_log(f"[更新] バージョン確認に失敗: {e}")
+                    def _pver(v: str):
+                        try:
+                            parts = [int(p) for p in (v or "0").split(".")]
+                        except Exception:
+                            parts = [0]
+                        while len(parts) < 3:
+                            parts.append(0)
+                        return tuple(parts[:3])
+                    if latest_ver and _pver(latest_ver) <= _pver(cur):
+                        self._append_log("[更新] 最新版を利用中です")
+                        return
+                    self._append_log(f"[更新] 新しいバージョンが見つかりました: {latest_ver or 'latest'} — リリースページを開きます")
+                    try:
+                        webbrowser.open(release_page, new=2)
+                    except Exception:
+                        try:
+                            if sys.platform.startswith("win"):
+                                os.startfile(release_page)  # type: ignore[attr-defined]
+                            elif sys.platform == "darwin":
+                                subprocess.Popen(["open", release_page])
+                            else:
+                                subprocess.Popen(["xdg-open", release_page])
+                        except Exception:
+                            pass
+                    return
+                # Non-GitHub: open provided URL directly
+                self._append_log("[更新] リリースURLを開きます")
+                try:
+                    webbrowser.open(feed_url, new=2)
+                except Exception:
+                    pass
+                return
+            except Exception:
+                # If anything fails, fall back to previous logic below
+                pass
             # Quick path: if UPDATE_FEED_URL points directly to an .exe (non-GitHub),
             # offer update without querying JSON feeds.
             gh_latest_dl = re.match(r"^https?://github\.com/([^/]+)/([^/]+)/releases/latest/download/([^/?#]+)$", feed_url, re.IGNORECASE)
