@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import threading
+import queue
 import concurrent.futures
 import tkinter as tk
 import tkinter.filedialog as fd
@@ -23,8 +24,10 @@ from app.threads.double_battle import DoubleBattleThread
 from app.threads.rkaisi_teisi import RkaisiTeisiThread
 from app.threads.syouhai import SyouhaiThread
 from app.threads.discord_webhook import DiscordWebhookThread
+from app.threads.result_association import ResultAssociationThread
 from app.utils.logging import UiLogger
 from app.version import VERSION as APP_VERSION
+from app.utils import stats as stats_utils
 
 
 class App(ctk.CTk):
@@ -47,6 +50,8 @@ class App(ctk.CTk):
         self._th_rkaisi: Optional[RkaisiTeisiThread] = None
         self._th_syouhai: Optional[SyouhaiThread] = None
         self._th_discord: Optional[DiscordWebhookThread] = None
+        self._th_result_assoc: Optional[ResultAssociationThread] = None
+        self._results_queue: Optional[queue.Queue] = None
 
         # Widgets
         self.host_entry: ctk.CTkEntry
@@ -208,6 +213,7 @@ class App(ctk.CTk):
         tabs.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
         tab_log = tabs.add("Log")
         tab_gallery = tabs.add("Gallery")
+        tab_stats = tabs.add("Stats")
 
         # Log tab
         tab_log.grid_rowconfigure(0, weight=1)
@@ -224,6 +230,8 @@ class App(ctk.CTk):
 
         # Gallery tab
         self._build_gallery_ui(tab_gallery)
+        # Stats tab
+        self._build_stats_ui(tab_stats)
         # Initial load
         self.after(200, self._reload_gallery)
         # Auto-refresh if enabled
@@ -600,9 +608,22 @@ class App(ctk.CTk):
             os.makedirs(handantmp, exist_ok=True)
             self._th_rkaisi = RkaisiTeisiThread(self._obs, handantmp, logger, source_name=src)
             self._th_rkaisi.start()
+        # Result association queue shared between Syouhai and association thread
+        self._results_queue = queue.Queue()
         if self.chk_syouhai_var.get():
-            self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger, source_name=src)
+            self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger, source_name=src, result_queue=self._results_queue)
             self._th_syouhai.start()
+            # Start association thread to tie new images to results. Use small timeout
+            # to default pending images to 'win' if lose/DC is not detected.
+            self._th_result_assoc = ResultAssociationThread(
+                base_dir,
+                self._results_queue,
+                logger,
+                default_win_timeout=5.0,
+                obs=self._obs,
+                text_source="sensekiText1",
+            )
+            self._th_result_assoc.start()
         if self.chk_discord_var.get():
             url = (self.discord_url_var.get() or "").strip()
             if url:
@@ -612,7 +633,7 @@ class App(ctk.CTk):
                 self._append_log("[Discord] Webhook URL が未設定のため開始しません")
 
     def _stop_threads(self) -> None:
-        for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord):
+        for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord, self._th_result_assoc):
             try:
                 if th and th.is_alive():
                     th.stop()  # type: ignore[attr-defined]
@@ -620,7 +641,7 @@ class App(ctk.CTk):
                 pass
 
         # Optional join to let threads exit promptly
-        for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord):
+        for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord, self._th_result_assoc):
             try:
                 if th:
                     th.join(timeout=1.0)
@@ -636,6 +657,103 @@ class App(ctk.CTk):
             self._obs = None
 
         mb.showinfo("停止", "すべてのスレッドを停止しました。")
+
+    # --- Stats UI ---
+    def _build_stats_ui(self, parent: ctk.CTkFrame) -> None:
+        parent.grid_rowconfigure(2, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        ctrl = ctk.CTkFrame(parent)
+        ctrl.grid(row=0, column=0, sticky="we", padx=8, pady=8)
+        ctrl.grid_columnconfigure(4, weight=1)
+
+        ctk.CTkLabel(ctrl, text="期間 (YYYY-MM-DD)").grid(row=0, column=0, padx=(8, 6))
+        self._stats_start = ctk.CTkEntry(ctrl, width=120)
+        self._stats_start.grid(row=0, column=1)
+        ctk.CTkLabel(ctrl, text="〜").grid(row=0, column=2)
+        self._stats_end = ctk.CTkEntry(ctrl, width=120)
+        self._stats_end.grid(row=0, column=3)
+
+        ctk.CTkButton(ctrl, text="Reload", width=80, command=self._refresh_stats).grid(row=0, column=5, padx=(8, 6))
+        ctk.CTkButton(ctrl, text="Open CSV", width=90, command=self._open_results_csv).grid(row=0, column=6, padx=(0, 6))
+        ctk.CTkButton(ctrl, text="Save Chart", width=100, command=self._save_stats_chart).grid(row=0, column=7, padx=(0, 8))
+
+        self._stats_summary = ctk.CTkLabel(parent, text="", anchor="w")
+        self._stats_summary.grid(row=1, column=0, sticky="we", padx=12)
+
+        self._stats_chart_label = ctk.CTkLabel(parent, text="")
+        self._stats_chart_label.grid(row=2, column=0, sticky="nsew", padx=12, pady=12)
+        self._stats_chart_img_ref: Optional[ctk.CTkImage] = None
+
+        try:
+            self.after(300, self._refresh_stats)
+        except Exception:
+            pass
+
+    def _parse_date(self, s: str):
+        try:
+            s2 = (s or "").strip()
+            if not s2:
+                return None
+            import datetime as _dt
+            return _dt.datetime.strptime(s2, "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    def _refresh_stats(self) -> None:
+        base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
+        rows = stats_utils.load_results(base_dir)
+        import datetime as _dt
+        start = self._parse_date(self._stats_start.get()) if getattr(self, "_stats_start", None) else None
+        end = self._parse_date(self._stats_end.get()) if getattr(self, "_stats_end", None) else None
+        per_day = stats_utils.aggregate_by_day(rows, start, end)
+        win, lose, dc, wr = stats_utils.compute_totals([(t, i, r) for (t, i, r) in rows if (not start or t.date() >= start) and (not end or t.date() <= end)])
+        self._stats_summary.configure(text=f"Win: {win}  Lose: {lose}  DC: {dc}  WinRate: {wr:.1f}%")
+
+        img = stats_utils.render_winrate_chart(per_day, size=(900, 320))
+        try:
+            ctki = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
+            self._stats_chart_img_ref = ctki
+            self._stats_chart_label.configure(image=ctki, text="")
+        except Exception:
+            # fallback: save temp and show message
+            self._stats_chart_label.configure(text="チャートの描画に失敗")
+
+    def _open_results_csv(self) -> None:
+        base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
+        path = os.path.join(base_dir, "koutiku", "_results.csv")
+        try:
+            if os.path.exists(path):
+                if sys.platform.startswith("win"):
+                    os.startfile(path)  # type: ignore[attr-defined]
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", path])
+                else:
+                    subprocess.Popen(["xdg-open", path])
+            else:
+                mb.showinfo("CSV", "まだ結果CSVはありません。")
+        except Exception as e:
+            mb.showerror("CSV", f"CSV を開けませんでした\n{e}")
+
+    def _save_stats_chart(self) -> None:
+        # Save current chart image as PNG
+        try:
+            from PIL import Image
+        except Exception:
+            mb.showerror("保存", "Pillow が見つかりません")
+            return
+        base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
+        rows = stats_utils.load_results(base_dir)
+        start = self._parse_date(self._stats_start.get()) if getattr(self, "_stats_start", None) else None
+        end = self._parse_date(self._stats_end.get()) if getattr(self, "_stats_end", None) else None
+        per_day = stats_utils.aggregate_by_day(rows, start, end)
+        img = stats_utils.render_winrate_chart(per_day, size=(900, 320))
+        try:
+            out = fd.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", ".png")], title="チャートを保存")
+            if out:
+                img.save(out, format="PNG")
+        except Exception as e:
+            mb.showerror("保存", f"保存に失敗しました\n{e}")
 
     # --- settings persistence ---
     @staticmethod
