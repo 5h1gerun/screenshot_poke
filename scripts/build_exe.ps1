@@ -6,7 +6,20 @@ param(
     # Build with console window for debugging bootloader issues
     [switch]$Console = $false,
     # Custom extraction directory for onefile runtime (helps if %TEMP% is restricted)
-    [string]$RuntimeTmp = "$env:LOCALAPPDATA\PyInstallerCache"
+    [string]$RuntimeTmp = "$env:LOCALAPPDATA\PyInstallerCache",
+
+    # Embed Windows version resource to improve AV/Smartscreen reputation
+    [switch]$AddVersionInfo = $true,
+    [string]$CompanyName = "",
+    [string]$FileDescription = "OBS Screenshot Tool",
+    [string]$ProductName = "OBS Screenshot Tool",
+
+    # Optional code signing (reduces false-positives dramatically)
+    [switch]$Sign = $false,
+    [string]$PfxPath = "",
+    [string]$PfxPassword = "",
+    [string]$CertThumbprint = "",
+    [string]$TimestampUrl = "http://timestamp.digicert.com"
 )
 
 Write-Host "Setting up venv and installing deps..."
@@ -44,7 +57,7 @@ if (Test-Path 'icon.png') {
 }
 
 $opts = @()
-if ($OneFile) { $opts += "--onefile" }
+if ($OneFile) { $opts += "--onefile" } else { $opts += "--onedir" }
 if ($OneFile -and $RuntimeTmp) { $opts += @('--runtime-tmpdir', $RuntimeTmp) }
 if ($NoUPX) { $opts += "--noupx" }
 
@@ -95,14 +108,87 @@ if (Test-Path $iconIco) {
 if ($iconAbs) {
     $pyArgs += @('--icon', $iconAbs)
 }
+$verInfoPath = $null
+if ($AddVersionInfo) {
+    $version = '1.0.0'
+    try {
+        if (Test-Path 'app/version.py') {
+            $vline = (Get-Content 'app/version.py' | Where-Object { $_ -match 'VERSION\s*=\s*"' } | Select-Object -First 1)
+            if ($vline) { $version = ([regex]::Match($vline, '"([0-9]+\.[0-9]+\.[0-9]+)"')).Groups[1].Value }
+        }
+    } catch {}
+    if (-not (Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir | Out-Null }
+    $verInfoPath = Join-Path $buildDir 'version_info.txt'
+    $fileVer = if ($version -match '^[0-9]+\.[0-9]+\.[0-9]+$') { "$version.0" } else { '1.0.0.0' }
+    $verTupleStr = (($fileVer -split '\.') -join ', ')
+    $company = $CompanyName
+    $desc = if ($FileDescription) { $FileDescription } else { $Name }
+    $prod = if ($ProductName) { $ProductName } else { $Name }
+    $verText = @"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($verTupleStr),
+    prodvers=($verTupleStr),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName', '${company}'),
+        StringStruct('FileDescription', '${desc}'),
+        StringStruct('FileVersion', '${fileVer}'),
+        StringStruct('InternalName', '${Name}.exe'),
+        StringStruct('LegalCopyright', ''),
+        StringStruct('OriginalFilename', '${Name}.exe'),
+        StringStruct('ProductName', '${prod}'),
+        StringStruct('ProductVersion', '${fileVer}')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"@
+    Set-Content -Path $verInfoPath -Value $verText -Encoding UTF8
+}
 $pyArgs = $pyArgs + $opts + @(
     '--hidden-import', 'obswebsocket',
     '--hidden-import', 'customtkinter',
     '--hidden-import', 'darkdetect',
     '--hidden-import', 'PIL'
 ) + $addBin + @('combined_app.py')
+$verInfoArg = $null
+if ($verInfoPath) {
+    try { $verInfoArg = (Resolve-Path $verInfoPath).Path } catch { $verInfoArg = $verInfoPath }
+    $pyArgs += @('--version-file', $verInfoArg)
+}
 
 & pyinstaller @pyArgs
 
 Write-Host "Build finished. Output in dist/$Name/ or dist/$Name.exe"
 
+# Optional code signing step
+if ($Sign) {
+    $signtool = $null
+    try { $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source } catch { $signtool = $null }
+    if (-not $signtool) {
+        Write-Warning "signtool.exe not found. Install Windows SDK or Visual Studio, or adjust PATH. Skipping signing."
+    } else {
+        $targetPath = if ($OneFile) { Join-Path 'dist' "$Name.exe" } else { Join-Path (Join-Path 'dist' $Name) "$Name.exe" }
+        if (Test-Path $targetPath) {
+            $baseArgs = @('sign','/fd','SHA256','/tr',$TimestampUrl,'/td','SHA256')
+            if ($PfxPath) { $baseArgs += @('/f',$PfxPath); if ($PfxPassword) { $baseArgs += @('/p',$PfxPassword) } }
+            elseif ($CertThumbprint) { $baseArgs += @('/sha1',$CertThumbprint) }
+            else { $baseArgs += '/a' }
+            & $signtool @baseArgs $targetPath
+            if ($LASTEXITCODE -ne 0) { Write-Warning "Code signing failed with exit code $LASTEXITCODE" }
+            else { Write-Host "Signed $targetPath" }
+        } else {
+            Write-Warning "Built executable not found at $targetPath. Skipping signing."
+        }
+    }
+}
