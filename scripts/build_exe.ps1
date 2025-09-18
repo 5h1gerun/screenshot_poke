@@ -2,7 +2,11 @@ param(
     [switch]$OneFile = $true,
     [string]$Name = "OBS-Screenshot-Tool",
     # UPX can cause DLL loading issues on some environments. Disable by default.
-    [switch]$NoUPX = $true
+    [switch]$NoUPX = $true,
+    # Build with console window for debugging bootloader issues
+    [switch]$Console = $false,
+    # Custom extraction directory for onefile runtime (helps if %TEMP% is restricted)
+    [string]$RuntimeTmp = "$env:LOCALAPPDATA\PyInstallerCache"
 )
 
 Write-Host "Setting up venv and installing deps..."
@@ -11,24 +15,70 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+# Sanity: ensure we are using 64-bit Python on 64-bit Windows (recommended)
+try {
+  $pyBits = & python -c "import struct; print(8*struct.calcsize('P'))"
+} catch { $pyBits = $null }
+if ([Environment]::Is64BitOperatingSystem -and $pyBits -and $pyBits.Trim() -ne '64') {
+  Write-Warning "You are using 32-bit Python on a 64-bit OS. This often causes 'Failed to load Python DLL'. Install 64-bit Python and retry."
+}
+
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install pyinstaller
 
 $opts = @()
 if ($OneFile) { $opts += "--onefile" }
+if ($OneFile -and $RuntimeTmp) { $opts += @('--runtime-tmpdir', $RuntimeTmp) }
 if ($NoUPX) { $opts += "--noupx" }
 
-pyinstaller --noconfirm --clean `
-  --name $Name `
-  --noconsole `
-  --windowed `
-  $opts `
-  --hidden-import obswebsocket `
-  --hidden-import customtkinter `
-  --hidden-import darkdetect `
-  --hidden-import PIL `
-  combined_app.py
+# Gather VC runtime DLLs from the current Python installation to avoid
+# "Failed to load Python DLL" on target machines missing VC++ redistributables.
+$pyBase = & python -c "import sys,os; print(os.path.dirname(sys.executable))"
+
+# Proactively ship common VC++ runtime DLLs alongside the EXE to avoid
+# LoadLibrary failures on target machines lacking redistributables.
+$dllNames = @(
+  'vcruntime140.dll', 'vcruntime140_1.dll',
+  'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'concrt140.dll'
+)
+function Find-Dll([string]$name) {
+  $candidates = @(
+    (Join-Path $pyBase $name),
+    (Join-Path (Split-Path $pyBase -Parent) $name),
+    (Join-Path "$env:SystemRoot\System32" $name)
+  )
+  foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
+  try { $w = & where.exe $name 2>$null; if ($w) { return $w.Split("`n")[0].Trim() } } catch {}
+  return $null
+}
+
+$addBin = @()
+foreach ($n in $dllNames) {
+  $p = Find-Dll $n
+  if ($p) { $addBin += @('--add-binary', "$p;.") }
+}
+
+# Build PyInstaller argument list explicitly to avoid quoting issues.
+$pyArgs = @(
+    '--noconfirm',
+    '--clean',
+    '--specpath', 'build',
+    '--name', $Name
+)
+if ($Console) {
+    $pyArgs += @('--console')
+} else {
+    $pyArgs += @('--noconsole','--windowed')
+}
+$pyArgs = $pyArgs + $opts + @(
+    '--hidden-import', 'obswebsocket',
+    '--hidden-import', 'customtkinter',
+    '--hidden-import', 'darkdetect',
+    '--hidden-import', 'PIL'
+) + $addBin + @('combined_app.py')
+
+& pyinstaller @pyArgs
 
 Write-Host "Build finished. Output in dist/$Name/ or dist/$Name.exe"
 
