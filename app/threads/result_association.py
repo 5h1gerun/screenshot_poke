@@ -7,6 +7,7 @@ from collections import deque
 from typing import Deque, Dict, Optional
 
 from app.utils.logging import UiLogger
+from app.utils import paths as paths_utils
 from app.obs_client import ObsClient
 from app.utils import stats as stats_utils
 
@@ -36,7 +37,7 @@ class ResultAssociationThread(threading.Thread):
     ) -> None:
         super().__init__(daemon=True)
         self._base = base_dir
-        self._koutiku = os.path.join(base_dir, "koutiku")
+        self._koutiku = paths_utils.get_koutiku_dir(base_dir)
         os.makedirs(self._koutiku, exist_ok=True)
         self._log = logger or UiLogger()
         self._stop = threading.Event()

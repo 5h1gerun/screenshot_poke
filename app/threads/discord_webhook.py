@@ -8,6 +8,7 @@ import json
 from typing import Optional, Set
 
 from app.utils.logging import UiLogger
+from app.utils import paths as paths_utils
 
 try:
     # Use stdlib to avoid extra dependency
@@ -28,7 +29,7 @@ class DiscordWebhookThread(threading.Thread):
     def __init__(self, base_dir: str, webhook_url: str, logger: Optional[UiLogger] = None) -> None:
         super().__init__(daemon=True)
         self._base = base_dir
-        self._koutiku = os.path.join(base_dir, "koutiku")
+        self._koutiku = paths_utils.get_koutiku_dir(base_dir)
         os.makedirs(self._koutiku, exist_ok=True)
         self._url = (webhook_url or "").strip()
         self._log = logger or UiLogger()

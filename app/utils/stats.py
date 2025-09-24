@@ -8,9 +8,11 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
 
+from app.utils import paths as paths_utils
+
 
 def _results_csv_path(base_dir: str) -> str:
-    return os.path.join(base_dir, "koutiku", "_results.csv")
+    return paths_utils.get_results_csv_path(base_dir)
 
 
 def append_result(
@@ -153,7 +155,7 @@ def compute_totals(rows: Iterable[Tuple[dt.datetime, str, str]]) -> Tuple[int, i
 
 def add_result_tag(base_dir: str, image_name: str, result: str) -> None:
     """Update koutiku/_tags.json to include the result as a tag for the image."""
-    tags_path = os.path.join(base_dir, "koutiku", "_tags.json")
+    tags_path = paths_utils.get_tags_json_path(base_dir)
     os.makedirs(os.path.dirname(tags_path), exist_ok=True)
     data: Dict[str, List[str]] = {}
     try:
@@ -179,7 +181,7 @@ def add_result_tag(base_dir: str, image_name: str, result: str) -> None:
 
 def add_tags(base_dir: str, image_name: str, tags: List[str]) -> None:
     """Add multiple tags to the image entry in koutiku/_tags.json (deduped)."""
-    tags_path = os.path.join(base_dir, "koutiku", "_tags.json")
+    tags_path = paths_utils.get_tags_json_path(base_dir)
     os.makedirs(os.path.dirname(tags_path), exist_ok=True)
     data: Dict[str, List[str]] = {}
     try:

@@ -6,12 +6,14 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
+from app.utils import paths as paths_utils
+
 
 _NAME_TS_RE = re.compile(r"^(?P<ts>\d{8}_\d{6})")
 
 
 def _pairs_json_path(base_dir: str) -> str:
-    return os.path.join(base_dir, "koutiku", "_pairs.json")
+    return paths_utils.get_pairs_json_path(base_dir)
 
 
 def load_pairs(base_dir: str) -> Dict[str, str]:
@@ -55,7 +57,7 @@ def list_images_in_range(base_dir: str, start: float, end: float) -> List[str]:
     Uses the timestamp embedded in file names like YYYYMMDD_HHMMSS.* when available;
     falls back to file mtime if the name doesn't match.
     """
-    koutiku = os.path.join(base_dir, "koutiku")
+    koutiku = paths_utils.get_koutiku_dir(base_dir)
     out: List[str] = []
     try:
         entries = []
