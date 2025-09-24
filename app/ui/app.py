@@ -106,10 +106,76 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _maximize_on_start(self) -> None:
+        """Maximize the window on startup without forcing true fullscreen.
+
+        - Windows: use state('zoomed')
+        - Linux: try attributes('-zoomed', True) then state('zoomed')
+        - macOS: set geometry to screen size as an approximation
+        """
+        try:
+            self.update_idletasks()
+            if sys.platform.startswith("win"):
+                try:
+                    self.state("zoomed")
+                    return
+                except Exception:
+                    pass
+            if sys.platform == "darwin":
+                try:
+                    sw = self.winfo_screenwidth()
+                    sh = self.winfo_screenheight()
+                    self.geometry(f"{sw}x{sh}+0+0")
+                    return
+                except Exception:
+                    pass
+            try:
+                self.attributes("-zoomed", True)
+            except Exception:
+                try:
+                    self.state("zoomed")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _on_tab_changed(self, value: str | None = None) -> None:
+        """Adjust layout depending on selected tab.
+
+        - Log: settings (left) wide -> weights (2, 1)
+        - Gallery/Stats: content (right) wide -> weights (1, 2)
+        """
+        try:
+            name = value or (self._tabs.get() if getattr(self, "_tabs", None) else "Log")  # type: ignore[attr-defined]
+            name_l = (name or "").strip().lower()
+        except Exception:
+            name_l = "log"
+        try:
+            if name_l == "log":
+                self.grid_columnconfigure(0, weight=2)
+                self.grid_columnconfigure(1, weight=1)
+            else:
+                self.grid_columnconfigure(0, weight=1)
+                self.grid_columnconfigure(1, weight=2)
+        except Exception:
+            pass
+        # When switching to gallery/stats, refresh sizing-sensitive views
+        try:
+            if name_l == "gallery":
+                self.after(50, self._reload_gallery)
+            elif name_l == "stats":
+                self.after(50, self._refresh_stats)
+        except Exception:
+            pass
+
     # --- UI ---
     def _build_ui(self) -> None:
-        self.grid_columnconfigure(0, weight=0)
-        self.grid_columnconfigure(1, weight=1)
+        # Default: Log tab selected -> settingsを広め (2:1)
+        try:
+            self.grid_columnconfigure(0, weight=2)
+            self.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
         # Keep the title row compact; let content row expand
         self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
@@ -117,34 +183,47 @@ class App(ctk.CTk):
         title = ctk.CTkLabel(self, text=f"OBS Screenshot / Template Tool v{APP_VERSION}", font=ctk.CTkFont(size=18, weight="bold"))
         title.grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(12, 0))
 
-        sidebar = ctk.CTkFrame(self, corner_radius=10)
-        sidebar.grid(row=1, column=0, sticky="nsw", padx=(16, 8), pady=12)
-        sidebar.grid_rowconfigure(99, weight=1)
+        sidebar = ctk.CTkScrollableFrame(self, corner_radius=10)
+        sidebar.grid(row=1, column=0, sticky="nsew", padx=(16, 8), pady=12)
+        try:
+            sidebar.grid_rowconfigure(99, weight=1)
+        except Exception:
+            pass
+
+        # Start maximized (best-effort, cross-platform)
+        try:
+            self.after(100, self._maximize_on_start)
+        except Exception:
+            pass
 
         # OBS connection
         obs_frame = ctk.CTkFrame(sidebar, corner_radius=10)
         obs_frame.grid(row=0, column=0, sticky="we", padx=8, pady=(8, 6))
+        try:
+            obs_frame.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
         ctk.CTkLabel(obs_frame, text="OBS Connection", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 4)
         )
 
         ctk.CTkLabel(obs_frame, text="Host").grid(row=1, column=0, sticky="e", padx=8, pady=4)
-        self.host_entry = ctk.CTkEntry(obs_frame, width=160)
+        self.host_entry = ctk.CTkEntry(obs_frame, width=480)
         self.host_entry.insert(0, os.getenv("OBS_HOST", "localhost"))
         self.host_entry.grid(row=1, column=1, sticky="w", padx=8, pady=4)
 
         ctk.CTkLabel(obs_frame, text="Port").grid(row=2, column=0, sticky="e", padx=8, pady=4)
-        self.port_entry = ctk.CTkEntry(obs_frame, width=120)
+        self.port_entry = ctk.CTkEntry(obs_frame, width=200)
         self.port_entry.insert(0, os.getenv("OBS_PORT", "4444"))
         self.port_entry.grid(row=2, column=1, sticky="w", padx=8, pady=4)
 
         ctk.CTkLabel(obs_frame, text="Password").grid(row=3, column=0, sticky="e", padx=8, pady=4)
-        self.pass_entry = ctk.CTkEntry(obs_frame, width=160, show="*")
+        self.pass_entry = ctk.CTkEntry(obs_frame, width=480, show="*")
         self.pass_entry.insert(0, os.getenv("OBS_PASSWORD", ""))
         self.pass_entry.grid(row=3, column=1, sticky="w", padx=8, pady=4)
 
         ctk.CTkLabel(obs_frame, text="Base Directory").grid(row=4, column=0, sticky="e", padx=8, pady=4)
-        self.base_dir_entry = ctk.CTkEntry(obs_frame, width=260)
+        self.base_dir_entry = ctk.CTkEntry(obs_frame, width=520)
         # Resolve BASE_DIR relative to the app/.env location so it stays relocatable
         self.base_dir_entry.insert(0, self._resolve_base_dir_default())
         self.base_dir_entry.grid(row=4, column=1, sticky="w", padx=8, pady=4)
@@ -153,26 +232,26 @@ class App(ctk.CTk):
         # Scene/Source selection
         ctk.CTkLabel(obs_frame, text="Scene").grid(row=5, column=0, sticky="e", padx=8, pady=4)
         default_scene = os.getenv("OBS_SCENE", "")
-        self.scene_opt = ctk.CTkOptionMenu(obs_frame, values=[default_scene] if default_scene else [""], width=200)
+        self.scene_opt = ctk.CTkOptionMenu(obs_frame, values=[default_scene] if default_scene else [""], width=300)
         self.scene_opt.set(default_scene)
         self.scene_opt.grid(row=5, column=1, sticky="w", padx=8, pady=4)
 
         ctk.CTkLabel(obs_frame, text="Source").grid(row=6, column=0, sticky="e", padx=8, pady=4)
         default_source = os.getenv("OBS_SOURCE", "Capture1")
-        self.source_opt = ctk.CTkOptionMenu(obs_frame, values=[default_source], width=200)
+        self.source_opt = ctk.CTkOptionMenu(obs_frame, values=[default_source], width=300)
         self.source_opt.set(default_source)
         self.source_opt.grid(row=6, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="更新", command=self._refresh_obs_lists, width=80).grid(row=6, column=2, padx=8, pady=4)
 
         # Season (for per-season stats)
         ctk.CTkLabel(obs_frame, text="Season").grid(row=7, column=0, sticky="e", padx=8, pady=4)
-        self.season_entry = ctk.CTkEntry(obs_frame, width=160)
+        self.season_entry = ctk.CTkEntry(obs_frame, width=300)
         self.season_entry.insert(0, os.getenv("SEASON", ""))
         self.season_entry.grid(row=7, column=1, sticky="w", padx=8, pady=4)
 
         # Recordings directory (for image-video pairing)
         ctk.CTkLabel(obs_frame, text="Recordings Dir").grid(row=8, column=0, sticky="e", padx=8, pady=4)
-        self.recordings_dir_entry = ctk.CTkEntry(obs_frame, width=260)
+        self.recordings_dir_entry = ctk.CTkEntry(obs_frame, width=520)
         self.recordings_dir_entry.insert(0, os.getenv("RECORDINGS_DIR", ""))
         self.recordings_dir_entry.grid(row=8, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="Browse", width=80, command=self._browse_recordings_dir).grid(row=8, column=2, padx=8, pady=4)
@@ -196,7 +275,11 @@ class App(ctk.CTk):
             row=1, column=0, columnspan=2, sticky="w", padx=8, pady=2
         )
         ctk.CTkLabel(discord_frame, text="Webhook URL").grid(row=2, column=0, sticky="e", padx=8, pady=(4, 8))
-        self.discord_url_entry = ctk.CTkEntry(discord_frame, width=260, textvariable=self.discord_url_var)
+        try:
+            discord_frame.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
+        self.discord_url_entry = ctk.CTkEntry(discord_frame, width=520, textvariable=self.discord_url_var)
         self.discord_url_entry.grid(row=2, column=1, sticky="we", padx=(0, 8), pady=(4, 8))
 
         # Output settings
@@ -205,26 +288,25 @@ class App(ctk.CTk):
         ctk.CTkLabel(output_frame, text="Output", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
-        # Koutiku dir
-        ctk.CTkLabel(output_frame, text="Koutiku Dir").grid(row=1, column=0, sticky="e", padx=8, pady=4)
-        self.koutiku_dir_entry = ctk.CTkEntry(output_frame, width=160)
+        # Koutiku dir (構築保管)
+        ctk.CTkLabel(output_frame, text="構築保管").grid(row=1, column=0, sticky="e", padx=8, pady=4)
+        try:
+            output_frame.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
+        self.koutiku_dir_entry = ctk.CTkEntry(output_frame, width=260)
         self.koutiku_dir_entry.insert(0, os.getenv("OUTPUT_KOUTIKU_DIR", "koutiku"))
         self.koutiku_dir_entry.grid(row=1, column=1, sticky="w", padx=8, pady=4)
-        # Haisin dir
-        ctk.CTkLabel(output_frame, text="Haisin Dir").grid(row=2, column=0, sticky="e", padx=8, pady=4)
-        self.haisin_dir_entry = ctk.CTkEntry(output_frame, width=160)
+        # Haisin dir (配信用)
+        ctk.CTkLabel(output_frame, text="配信用").grid(row=2, column=0, sticky="e", padx=8, pady=4)
+        self.haisin_dir_entry = ctk.CTkEntry(output_frame, width=260)
         self.haisin_dir_entry.insert(0, os.getenv("OUTPUT_HAISIN_DIR", "haisin"))
         self.haisin_dir_entry.grid(row=2, column=1, sticky="w", padx=8, pady=4)
-        # Broadcast base name
-        ctk.CTkLabel(output_frame, text="Broadcast Name").grid(row=3, column=0, sticky="e", padx=8, pady=4)
-        self.haisin_base_entry = ctk.CTkEntry(output_frame, width=160)
-        self.haisin_base_entry.insert(0, os.getenv("OUTPUT_HAISIN_BASENAME", "haisinyou"))
-        self.haisin_base_entry.grid(row=3, column=1, sticky="w", padx=8, pady=4)
         # Image format
-        ctk.CTkLabel(output_frame, text="Image Format").grid(row=4, column=0, sticky="e", padx=8, pady=(4, 8))
+        ctk.CTkLabel(output_frame, text="Image Format").grid(row=3, column=0, sticky="e", padx=8, pady=(4, 8))
         self.format_opt = ctk.CTkOptionMenu(output_frame, values=["PNG", "JPG", "WEBP"]) 
         self.format_opt.set((os.getenv("OUTPUT_IMAGE_FORMAT", "PNG") or "PNG").upper())
-        self.format_opt.grid(row=4, column=1, sticky="w", padx=8, pady=(4, 8))
+        self.format_opt.grid(row=3, column=1, sticky="w", padx=8, pady=(4, 8))
 
         # Controls
         control_frame = ctk.CTkFrame(sidebar, corner_radius=10)
@@ -262,12 +344,28 @@ class App(ctk.CTk):
         right.grid(row=1, column=1, sticky="nsew", padx=(8, 16), pady=12)
         right.grid_rowconfigure(0, weight=1)
         right.grid_columnconfigure(0, weight=1)
+        # Keep a handle for width calculations in Gallery/Stats
+        self._right_frame = right
 
         tabs = ctk.CTkTabview(right)
         tabs.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
         tab_log = tabs.add("Log")
         tab_gallery = tabs.add("Gallery")
         tab_stats = tabs.add("Stats")
+        # Keep reference for tab detection
+        self._tabs = tabs
+        # Hook tab change to adjust layout (Log: left wide, Gallery/Stats: right wide)
+        try:
+            def _tab_click(value: str, _tabs=tabs):
+                # Ensure the clicked tab is actually selected before adjusting layout
+                try:
+                    _tabs.set(value)
+                except Exception:
+                    pass
+                self._on_tab_changed(value)
+            tabs._segmented_button.configure(command=_tab_click)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
         # Log tab
         tab_log.grid_rowconfigure(0, weight=1)
@@ -293,6 +391,11 @@ class App(ctk.CTk):
         # Optional: check updates in background
         try:
             self.after(1500, self._maybe_check_updates)
+        except Exception:
+            pass
+        # Apply initial layout for selected tab
+        try:
+            self.after(50, lambda: self._on_tab_changed(self._tabs.get()))  # type: ignore[attr-defined]
         except Exception:
             pass
 
@@ -804,7 +907,22 @@ class App(ctk.CTk):
         win, lose, dc, wr = stats_utils.compute_totals([(t, i, r) for (t, i, r) in rows if (not start or t.date() >= start) and (not end or t.date() <= end)])
         self._stats_summary.configure(text=f"Win: {win}  Lose: {lose}  DC: {dc}  WinRate: {wr:.1f}%")
 
-        img = stats_utils.render_winrate_chart(per_day, size=(900, 320))
+        # Dynamic chart size based on available width
+        try:
+            avail_w = self._stats_chart_label.winfo_width()
+            if not avail_w or avail_w <= 1:
+                avail_w = (self._right_frame.winfo_width() if getattr(self, "_right_frame", None) else self.winfo_width()) - 48
+        except Exception:
+            avail_w = 900
+        try:
+            w = max(900, min(1800, int(avail_w)))
+        except Exception:
+            w = 900
+        try:
+            h = max(320, min(600, int(w * 0.36)))
+        except Exception:
+            h = 360
+        img = stats_utils.render_winrate_chart(per_day, size=(w, h))
         try:
             ctki = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
             self._stats_chart_img_ref = ctki
@@ -948,7 +1066,6 @@ class App(ctk.CTk):
             # Output customization
             "OUTPUT_KOUTIKU_DIR": (self.koutiku_dir_entry.get().strip() if getattr(self, "koutiku_dir_entry", None) else os.getenv("OUTPUT_KOUTIKU_DIR", "koutiku")),
             "OUTPUT_HAISIN_DIR": (self.haisin_dir_entry.get().strip() if getattr(self, "haisin_dir_entry", None) else os.getenv("OUTPUT_HAISIN_DIR", "haisin")),
-            "OUTPUT_HAISIN_BASENAME": (self.haisin_base_entry.get().strip() if getattr(self, "haisin_base_entry", None) else os.getenv("OUTPUT_HAISIN_BASENAME", "haisinyou")),
             "OUTPUT_IMAGE_FORMAT": ((self.format_opt.get().strip().upper() if getattr(self, "format_opt", None) else os.getenv("OUTPUT_IMAGE_FORMAT", "PNG")) or "PNG"),
         }
 
@@ -1177,8 +1294,7 @@ class App(ctk.CTk):
         # Scrollable grid for thumbnails
         self._gallery_scroll = ctk.CTkScrollableFrame(parent, corner_radius=8)
         self._gallery_scroll.grid(row=1, column=0, sticky="nsew")
-        for i in range(4):
-            self._gallery_scroll.grid_columnconfigure(i, weight=1)
+        # Columns will be adjusted dynamically in _reload_gallery based on available width
 
     def _current_koutiku_path(self) -> str:
         base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
@@ -1312,10 +1428,26 @@ class App(ctk.CTk):
         items = items[:max_items]
         files = [p for (p, _mt) in items]
 
-        # Layout config
-        cols = 4
+        # Layout config (dynamic)
         thumb_w = int(os.getenv("GALLERY_THUMB", "240") or 240)
         pad = 8
+        # Determine number of columns from available width
+        try:
+            cw = self._gallery_scroll.winfo_width()
+            if not cw or cw <= 1:
+                cw = (self._right_frame.winfo_width() if getattr(self, "_right_frame", None) else self.winfo_width()) - 48
+        except Exception:
+            cw = 960
+        try:
+            cols = max(2, min(8, int(max(thumb_w + 2 * pad, cw) // (thumb_w + 2 * pad))))
+        except Exception:
+            cols = 4
+        # Reconfigure grid columns
+        try:
+            for i in range(cols):
+                self._gallery_scroll.grid_columnconfigure(i, weight=1)
+        except Exception:
+            pass
 
         # Shared placeholder to keep UI responsive while thumbnails load
         placeholder_ctk = None
@@ -1701,6 +1833,24 @@ class App(ctk.CTk):
         ctk.CTkButton(toolbar, text="保存…", width=90, command=_save_as).grid(row=0, column=3, padx=(0, 6))
         ctk.CTkButton(toolbar, text="配信用に保存", width=120, command=_save_to_broadcast).grid(row=0, column=4, padx=(0, 6))
 
+        # Remove all toolbar buttons and keep only Save…
+        try:
+            for _w in list(toolbar.winfo_children()):
+                _w.destroy()
+        except Exception:
+            pass
+        def _save_as_only():
+            fmt_map = {"PNG": (".png", "PNG"), "JPG": (".jpg", "JPEG"), "WEBP": (".webp", "WEBP")}
+            cur_fmt = (self.format_opt.get().strip().upper() if getattr(self, "format_opt", None) else "PNG")
+            def_ext, pil_fmt = fmt_map.get(cur_fmt, (".png", "PNG"))
+            out = fd.asksaveasfilename(defaultextension=def_ext, filetypes=[("PNG", ".png"), ("JPEG", ".jpg"), ("WEBP", ".webp")], title="画像を保存")
+            if out:
+                try:
+                    current_pil.save(out, format=pil_fmt)
+                except Exception as e:
+                    mb.showerror("保存", f"保存に失敗しました\n{e}")
+        ctk.CTkButton(toolbar, text="保存…", width=100, command=_save_as_only).grid(row=0, column=0, padx=(0, 6))
+
         # Live Tag Editor (auto-saves as you type)
         try:
             name = os.path.basename(path)
@@ -1708,10 +1858,10 @@ class App(ctk.CTk):
             self._load_gallery_tags()
             cur_tags = self._gallery_tags_map.get(name, [])
 
-            ctk.CTkLabel(frame, text="Tags").grid(row=1, column=0, sticky="e", padx=(0, 8), pady=(10, 0))
+            ctk.CTkLabel(frame, text="Tags").grid(row=2, column=0, sticky="e", padx=(0, 8), pady=(10, 0))
             tag_var = tk.StringVar(value=", ".join(cur_tags))
             tag_entry = ctk.CTkEntry(frame, textvariable=tag_var)
-            tag_entry.grid(row=1, column=1, sticky="we", pady=(10, 0))
+            tag_entry.grid(row=2, column=1, sticky="we", pady=(10, 0))
 
             def _on_tags_typing(event=None, fname=name):
                 # Debounce saves per file
@@ -1746,7 +1896,7 @@ class App(ctk.CTk):
 
             # Suggestions area under the entry
             sugg_frame = ctk.CTkFrame(frame, fg_color="transparent")
-            sugg_frame.grid(row=2, column=0, columnspan=2, sticky="we")
+            sugg_frame.grid(row=3, column=0, columnspan=2, sticky="we")
 
             def _update_suggestions():
                 # Clear previous
