@@ -3,22 +3,36 @@ name: Notify Discord on Release
 on:
   release:
     types: [published, edited]
+  workflow_dispatch: {}   # ← 手動実行を許可（Actions画面で Run workflow が出ます）
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Send Discord Embed notification
+      - name: Build Discord embed payload
+        id: build
         run: |
-          release_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME"
-          body=$(jq -nc \
-            --arg title "📢 新しいリリース: $GITHUB_REF_NAME" \
-            --arg url "$release_url" \
-            --arg desc "${GITHUB_REPOSITORY} のリリースが公開・更新されました。" \
+          set -euo pipefail
+          # 手動実行時（タグが無い場合）に備えたURL/タイトルのフォールバック
+          REF_NAME="${GITHUB_REF_NAME:-manual}"
+          RELEASE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$REF_NAME"
+          if [ "$REF_NAME" = "manual" ]; then
+            RELEASE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases"
+          fi
+
+          BODY=$(jq -nc \
+            --arg title "📢 新しいリリース: $REF_NAME" \
+            --arg url "$RELEASE_URL" \
+            --arg desc "$GITHUB_REPOSITORY のリリースが公開・更新されました。" \
             --argjson color 5814783 \
             '{embeds: [{title: $title, url: $url, description: $desc, color: $color}]}' )
+          echo "body=$BODY" >> "$GITHUB_OUTPUT"
 
-          curl -H "Content-Type: application/json; charset=utf-8" \
+      - name: Send to Discord
+        run: |
+          set -euo pipefail
+          echo "Payload: ${{ steps.build.outputs.body }}"
+          curl -v -H "Content-Type: application/json; charset=utf-8" \
                -X POST \
-               -d "$body" \
-               ${{ secrets.DISCORD_WEBHOOK }}
+               -d '${{ steps.build.outputs.body }}' \
+               '${{ secrets.DISCORD_WEBHOOK }}'
