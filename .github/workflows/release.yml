@@ -2,8 +2,7 @@ name: Notify Discord on Release
 
 on:
   release:
-    # すべて拾っておく（必要なら後でifで絞る）
-    types: [published, edited]
+    types: [published, edited, prereleased]
   workflow_dispatch:
 
 jobs:
@@ -11,68 +10,96 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      ACTION: ${{ github.event.action }}                             # published / edited / ...
-      IS_PRERELEASE: ${{ github.event.release.prerelease }}
-      IS_DRAFT: ${{ github.event.release.draft }}
-      RELEASE_NAME: ${{ github.event.release.name }}
-      TAG_NAME: ${{ github.event.release.tag_name }}
-      RELEASE_URL: ${{ github.event.release.html_url }}
-      REPO: ${{ github.repository }}
     steps:
-      - name: Build Discord embed payload
+      - name: Build fancy embed payload
         id: build
         run: |
           set -euo pipefail
 
-          # 表示用タイトルとアイコンを action で切替
+          E="$GITHUB_EVENT_PATH"
+
+          ACTION=$(jq -r '.action' "$E")
+          REPO="$GITHUB_REPOSITORY"
+          NAME=$(jq -r '.release.name // empty' "$E")
+          TAG=$(jq -r '.release.tag_name' "$E")
+          URL=$(jq -r '.release.html_url' "$E")
+          BODY=$(jq -r '.release.body // ""' "$E")
+          AVATAR=$(jq -r '.release.author.avatar_url // ""' "$E")
+          PRERELEASE=$(jq -r '.release.prerelease' "$E")
+          PUBLISHED_AT=$(jq -r '.release.published_at // .release.created_at // ""' "$E")
+
+          # 本文スニペット（改行→スペース、最大380文字）
+          SNIP=$(printf "%s" "$BODY" | tr -d '\r' | tr '\n' ' ' | sed 's/  \+/ /g' | cut -c1-380)
+          [ -n "$BODY" ] && [ "${#BODY}" -gt "${#SNIP}" ] && SNIP="${SNIP}…"
+
+          # アセット（最初の3件）
+          ASSETS_TXT=$(jq -r '[.release.assets[]? | {name, url: .browser_download_url}] | .[:3] | if length==0 then "" else ( map("[" + .name + "](" + .url + ")") | join("\n") ) end' "$E")
+          FIRST_ASSET_URL=$(jq -r '.release.assets[0]?.browser_download_url // ""' "$E")
+
+          # アクション別の色
           case "$ACTION" in
-            published)    PREFIX="🚀 公開";;
-            edited)       PREFIX="✏️ 更新";;
-            created)      PREFIX="📝 下書き作成/即時公開";;
-            deleted)      PREFIX="🗑️ 削除";;
-            unpublished)  PREFIX="📥 非公開に戻す";;
-            prereleased)  PREFIX="🧪 プレリリース公開";;
-            *)            PREFIX="ℹ️ リリース";;
+            published)   COLOR=3066993 ;;   # 緑
+            edited)      COLOR=15844367 ;;  # 黄
+            prereleased) COLOR=10181046 ;;  # 紫
+            *)           COLOR=5814783 ;;
           esac
 
-          # タイトル（名前が無ければタグを使う）
-          TITLE="${PREFIX}: ${RELEASE_NAME:-$TAG_NAME}"
+          # タイトル
+          PREFIX="ℹ️ リリース"
+          [ "$ACTION" = "published" ]   && PREFIX="🚀 公開"
+          [ "$ACTION" = "edited" ]      && PREFIX="✏️ 更新"
+          [ "$ACTION" = "prereleased" ] && PREFIX="🧪 プレリリース"
+          TITLE="$PREFIX: ${NAME:-$TAG}"
 
-          # 説明文（プレリリース/ドラフトの注記）
-          NOTE=""
-          [ "${IS_PRERELEASE}" = "true" ] && NOTE="${NOTE}(プレリリース)"
-          [ "${IS_DRAFT}" = "true" ] && NOTE="${NOTE}(ドラフト)"
-          DESC="${REPO} のリリースが ${ACTION} されました。${NOTE}"
-
-          # Embed JSON を jq で生成（UTF-8）
-          BODY=$(jq -nc \
+          # Embed本体
+          EMBED=$(jq -nc \
             --arg title "$TITLE" \
-            --arg url "${RELEASE_URL:-https://github.com/$REPO/releases}" \
-            --arg desc "$DESC" \
+            --arg url "$URL" \
+            --arg desc "${SNIP:-$REPO のリリースです}" \
             --arg repo "$REPO" \
-            --arg tag "$TAG_NAME" \
-            --arg action "$ACTION" \
-            --argjson color 5814783 \
-            '{embeds: [{
-                title: $title,
-                url: $url,
-                description: $desc,
-                color: $color,
-                footer: { text: ("action: " + $action) },
-                fields: [
-                  { name: "Repository", value: $repo, inline: true },
-                  { name: "Tag",        value: $tag,  inline: true }
-                ]
-            }]}' )
+            --arg tag "$TAG" \
+            --arg footer "action: $ACTION" \
+            --arg avatar "$AVATAR" \
+            --arg assets "$ASSETS_TXT" \
+            --arg ts "$PUBLISHED_AT" \
+            --argjson color "$COLOR" \
+            '{
+              username: "GitHub • Releases",
+              avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+              embeds: [{
+                title: $title, url: $url, description: $desc, color: $color,
+                author: { name: $repo, icon_url: "https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png" },
+                thumbnail: (if $avatar != "" then {url: $avatar} else null end),
+                timestamp: (if $ts != "" then $ts else (now|todate) end),
+                fields: (
+                  [
+                    {name:"Repository", value:$repo, inline:true},
+                    {name:"Tag",        value:$tag,  inline:true}
+                  ] + (if $assets != "" then [{name:"Assets (top 3)", value:$assets, inline:false}] else [] end)
+                ),
+                footer: { text: $footer }
+              }]
+            }')
 
-          echo "body=$BODY" >> "$GITHUB_OUTPUT"
+          # リンクボタン（Release, 先頭アセット）を追加
+          if [ -n "$FIRST_ASSET_URL" ]; then
+            EMBED=$(echo "$EMBED" | jq --arg rel "$URL" --arg dl "$FIRST_ASSET_URL" \
+              '. + {components: [{type:1, components:[
+                  {type:2, style:5, label:"Open Release", url:$rel},
+                  {type:2, style:5, label:"Download (1st asset)", url:$dl}
+              ]}]}')
+          else
+            EMBED=$(echo "$EMBED" | jq --arg rel "$URL" \
+              '. + {components: [{type:1, components:[
+                  {type:2, style:5, label:"Open Release", url:$rel}
+              ]}]}')
+          fi
+
+          echo "body=$(printf '%s' "$EMBED")" >> "$GITHUB_OUTPUT"
 
       - name: Send to Discord
-        # 例: プレリリースを通知したくない場合は if で除外できる
-        # if: env.IS_PRERELEASE != 'true'
         run: |
-          set -euo pipefail
           curl -sS -H "Content-Type: application/json; charset=utf-8" \
                -X POST \
                -d '${{ steps.build.outputs.body }}' \
-               "${WEBHOOK}"
+               "$WEBHOOK"
