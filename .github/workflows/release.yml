@@ -10,7 +10,8 @@ jobs:
     steps:
       - name: Send Discord notification
         run: |
-          curl -H "Content-Type: application/json" \
-            -X POST \
-            -d "{\"content\": \"📢 新しいリリースが公開されました！ [${GITHUB_REPOSITORY}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME})\"}" \
-            ${{ secrets.DISCORD_WEBHOOK }}
+          body=$(jq -nc --arg msg "📢 新しいリリースが公開されました！ [$GITHUB_REPOSITORY]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME)" '{content: $msg}')
+          curl -H "Content-Type: application/json; charset=utf-8" \
+               -X POST \
+               -d "$body" \
+               ${{ secrets.DISCORD_WEBHOOK }}
