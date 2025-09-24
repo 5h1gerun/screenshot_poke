@@ -74,6 +74,61 @@ class ObsClient:
         with self._lock:
             self._ws.call(requests.StopRecording())
 
+    def get_recordings_dir(self) -> Optional[str]:
+        """Best-effort to obtain OBS's recording directory via obs-websocket.
+
+        Tries, in order:
+        - GetRecordingFolder (v4 plugin)
+        - GetProfileParameter with (Output, RecFilePath)
+        Returns an absolute path string if available, otherwise None.
+        """
+        # 1) Try GetRecordingFolder
+        try:
+            with self._lock:
+                req = getattr(requests, "GetRecordingFolder", None)
+                if req is not None:
+                    res = self._ws.call(req())
+                else:
+                    res = None
+            if res is not None:
+                d = getattr(res, "datain", None) or {}
+                if isinstance(d, dict):
+                    for k in ("rec-folder", "rec_folder", "recordingFolder", "path", "folder"):
+                        v = d.get(k)
+                        if isinstance(v, str) and v:
+                            return v
+                # Some library versions expose a getter
+                for meth in ("getRecFolder", "getRecordingFolder"):
+                    try:
+                        fn = getattr(res, meth)
+                        v = fn()
+                        if isinstance(v, str) and v:
+                            return v
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 2) Try profile parameter
+        try:
+            with self._lock:
+                req = getattr(requests, "GetProfileParameter", None)
+                if req is not None:
+                    res = self._ws.call(req(parameterCategory="Output", parameterName="RecFilePath"))
+                else:
+                    res = None
+            if res is not None:
+                d = getattr(res, "datain", None) or {}
+                if isinstance(d, dict):
+                    for k in ("parameterValue", "value", "parameter", "path"):
+                        v = d.get(k)
+                        if isinstance(v, str) and v:
+                            return v
+        except Exception:
+            pass
+
+        return None
+
     # --- Text Source ---
     def update_text_source(self, source_name: str, text: str) -> None:
         with self._lock:
