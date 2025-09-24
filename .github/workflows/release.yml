@@ -2,37 +2,77 @@ name: Notify Discord on Release
 
 on:
   release:
-    types: [published, edited]
-  workflow_dispatch: {}   # ← 手動実行を許可（Actions画面で Run workflow が出ます）
+    # すべて拾っておく（必要なら後でifで絞る）
+    types: [published, edited, created, deleted, unpublished, prereleased]
+  workflow_dispatch:
 
 jobs:
   notify:
     runs-on: ubuntu-latest
+    env:
+      WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      ACTION: ${{ github.event.action }}                             # published / edited / ...
+      IS_PRERELEASE: ${{ github.event.release.prerelease }}
+      IS_DRAFT: ${{ github.event.release.draft }}
+      RELEASE_NAME: ${{ github.event.release.name }}
+      TAG_NAME: ${{ github.event.release.tag_name }}
+      RELEASE_URL: ${{ github.event.release.html_url }}
+      REPO: ${{ github.repository }}
     steps:
       - name: Build Discord embed payload
         id: build
         run: |
           set -euo pipefail
-          # 手動実行時（タグが無い場合）に備えたURL/タイトルのフォールバック
-          REF_NAME="${GITHUB_REF_NAME:-manual}"
-          RELEASE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$REF_NAME"
-          if [ "$REF_NAME" = "manual" ]; then
-            RELEASE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases"
-          fi
 
+          # 表示用タイトルとアイコンを action で切替
+          case "$ACTION" in
+            published)    PREFIX="🚀 公開";;
+            edited)       PREFIX="✏️ 更新";;
+            created)      PREFIX="📝 下書き作成/即時公開";;
+            deleted)      PREFIX="🗑️ 削除";;
+            unpublished)  PREFIX="📥 非公開に戻す";;
+            prereleased)  PREFIX="🧪 プレリリース公開";;
+            *)            PREFIX="ℹ️ リリース";;
+          esac
+
+          # タイトル（名前が無ければタグを使う）
+          TITLE="${PREFIX}: ${RELEASE_NAME:-$TAG_NAME}"
+
+          # 説明文（プレリリース/ドラフトの注記）
+          NOTE=""
+          [ "${IS_PRERELEASE}" = "true" ] && NOTE="${NOTE}(プレリリース)"
+          [ "${IS_DRAFT}" = "true" ] && NOTE="${NOTE}(ドラフト)"
+          DESC="${REPO} のリリースが ${ACTION} されました。${NOTE}"
+
+          # Embed JSON を jq で生成（UTF-8）
           BODY=$(jq -nc \
-            --arg title "📢 新しいリリース: $REF_NAME" \
-            --arg url "$RELEASE_URL" \
-            --arg desc "$GITHUB_REPOSITORY のリリースが公開・更新されました。" \
+            --arg title "$TITLE" \
+            --arg url "${RELEASE_URL:-https://github.com/$REPO/releases}" \
+            --arg desc "$DESC" \
+            --arg repo "$REPO" \
+            --arg tag "$TAG_NAME" \
+            --arg action "$ACTION" \
             --argjson color 5814783 \
-            '{embeds: [{title: $title, url: $url, description: $desc, color: $color}]}' )
+            '{embeds: [{
+                title: $title,
+                url: $url,
+                description: $desc,
+                color: $color,
+                footer: { text: ("action: " + $action) },
+                fields: [
+                  { name: "Repository", value: $repo, inline: true },
+                  { name: "Tag",        value: $tag,  inline: true }
+                ]
+            }]}' )
+
           echo "body=$BODY" >> "$GITHUB_OUTPUT"
 
       - name: Send to Discord
+        # 例: プレリリースを通知したくない場合は if で除外できる
+        # if: env.IS_PRERELEASE != 'true'
         run: |
           set -euo pipefail
-          echo "Payload: ${{ steps.build.outputs.body }}"
-          curl -v -H "Content-Type: application/json; charset=utf-8" \
+          curl -sS -H "Content-Type: application/json; charset=utf-8" \
                -X POST \
                -d '${{ steps.build.outputs.body }}' \
-               '${{ secrets.DISCORD_WEBHOOK }}'
+               "${WEBHOOK}"
