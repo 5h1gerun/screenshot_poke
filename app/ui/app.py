@@ -29,6 +29,7 @@ from app.threads.result_association import ResultAssociationThread
 from app.utils.logging import UiLogger
 from app.version import VERSION as APP_VERSION
 from app.utils import stats as stats_utils
+from app.utils import paths as paths_utils
 
 
 class App(ctk.CTk):
@@ -105,10 +106,76 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _maximize_on_start(self) -> None:
+        """Maximize the window on startup without forcing true fullscreen.
+
+        - Windows: use state('zoomed')
+        - Linux: try attributes('-zoomed', True) then state('zoomed')
+        - macOS: set geometry to screen size as an approximation
+        """
+        try:
+            self.update_idletasks()
+            if sys.platform.startswith("win"):
+                try:
+                    self.state("zoomed")
+                    return
+                except Exception:
+                    pass
+            if sys.platform == "darwin":
+                try:
+                    sw = self.winfo_screenwidth()
+                    sh = self.winfo_screenheight()
+                    self.geometry(f"{sw}x{sh}+0+0")
+                    return
+                except Exception:
+                    pass
+            try:
+                self.attributes("-zoomed", True)
+            except Exception:
+                try:
+                    self.state("zoomed")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _on_tab_changed(self, value: str | None = None) -> None:
+        """Adjust layout depending on selected tab.
+
+        - Log: settings (left) wide -> weights (2, 1)
+        - Gallery/Stats: content (right) wide -> weights (1, 2)
+        """
+        try:
+            name = value or (self._tabs.get() if getattr(self, "_tabs", None) else "Log")  # type: ignore[attr-defined]
+            name_l = (name or "").strip().lower()
+        except Exception:
+            name_l = "log"
+        try:
+            if name_l == "log":
+                self.grid_columnconfigure(0, weight=2)
+                self.grid_columnconfigure(1, weight=1)
+            else:
+                self.grid_columnconfigure(0, weight=1)
+                self.grid_columnconfigure(1, weight=2)
+        except Exception:
+            pass
+        # When switching to gallery/stats, refresh sizing-sensitive views
+        try:
+            if name_l == "gallery":
+                self.after(50, self._reload_gallery)
+            elif name_l == "stats":
+                self.after(50, self._refresh_stats)
+        except Exception:
+            pass
+
     # --- UI ---
     def _build_ui(self) -> None:
-        self.grid_columnconfigure(0, weight=0)
-        self.grid_columnconfigure(1, weight=1)
+        # Default: Log tab selected -> settingsを広め (2:1)
+        try:
+            self.grid_columnconfigure(0, weight=2)
+            self.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
         # Keep the title row compact; let content row expand
         self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
@@ -116,34 +183,47 @@ class App(ctk.CTk):
         title = ctk.CTkLabel(self, text=f"OBS Screenshot / Template Tool v{APP_VERSION}", font=ctk.CTkFont(size=18, weight="bold"))
         title.grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(12, 0))
 
-        sidebar = ctk.CTkFrame(self, corner_radius=10)
-        sidebar.grid(row=1, column=0, sticky="nsw", padx=(16, 8), pady=12)
-        sidebar.grid_rowconfigure(99, weight=1)
+        sidebar = ctk.CTkScrollableFrame(self, corner_radius=10)
+        sidebar.grid(row=1, column=0, sticky="nsew", padx=(16, 8), pady=12)
+        try:
+            sidebar.grid_rowconfigure(99, weight=1)
+        except Exception:
+            pass
+
+        # Start maximized (best-effort, cross-platform)
+        try:
+            self.after(100, self._maximize_on_start)
+        except Exception:
+            pass
 
         # OBS connection
         obs_frame = ctk.CTkFrame(sidebar, corner_radius=10)
         obs_frame.grid(row=0, column=0, sticky="we", padx=8, pady=(8, 6))
+        try:
+            obs_frame.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
         ctk.CTkLabel(obs_frame, text="OBS Connection", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 4)
         )
 
         ctk.CTkLabel(obs_frame, text="Host").grid(row=1, column=0, sticky="e", padx=8, pady=4)
-        self.host_entry = ctk.CTkEntry(obs_frame, width=160)
+        self.host_entry = ctk.CTkEntry(obs_frame, width=480)
         self.host_entry.insert(0, os.getenv("OBS_HOST", "localhost"))
         self.host_entry.grid(row=1, column=1, sticky="w", padx=8, pady=4)
 
         ctk.CTkLabel(obs_frame, text="Port").grid(row=2, column=0, sticky="e", padx=8, pady=4)
-        self.port_entry = ctk.CTkEntry(obs_frame, width=120)
+        self.port_entry = ctk.CTkEntry(obs_frame, width=200)
         self.port_entry.insert(0, os.getenv("OBS_PORT", "4444"))
         self.port_entry.grid(row=2, column=1, sticky="w", padx=8, pady=4)
 
         ctk.CTkLabel(obs_frame, text="Password").grid(row=3, column=0, sticky="e", padx=8, pady=4)
-        self.pass_entry = ctk.CTkEntry(obs_frame, width=160, show="*")
+        self.pass_entry = ctk.CTkEntry(obs_frame, width=480, show="*")
         self.pass_entry.insert(0, os.getenv("OBS_PASSWORD", ""))
         self.pass_entry.grid(row=3, column=1, sticky="w", padx=8, pady=4)
 
         ctk.CTkLabel(obs_frame, text="Base Directory").grid(row=4, column=0, sticky="e", padx=8, pady=4)
-        self.base_dir_entry = ctk.CTkEntry(obs_frame, width=260)
+        self.base_dir_entry = ctk.CTkEntry(obs_frame, width=520)
         # Resolve BASE_DIR relative to the app/.env location so it stays relocatable
         self.base_dir_entry.insert(0, self._resolve_base_dir_default())
         self.base_dir_entry.grid(row=4, column=1, sticky="w", padx=8, pady=4)
@@ -152,26 +232,26 @@ class App(ctk.CTk):
         # Scene/Source selection
         ctk.CTkLabel(obs_frame, text="Scene").grid(row=5, column=0, sticky="e", padx=8, pady=4)
         default_scene = os.getenv("OBS_SCENE", "")
-        self.scene_opt = ctk.CTkOptionMenu(obs_frame, values=[default_scene] if default_scene else [""], width=200)
+        self.scene_opt = ctk.CTkOptionMenu(obs_frame, values=[default_scene] if default_scene else [""], width=300)
         self.scene_opt.set(default_scene)
         self.scene_opt.grid(row=5, column=1, sticky="w", padx=8, pady=4)
 
         ctk.CTkLabel(obs_frame, text="Source").grid(row=6, column=0, sticky="e", padx=8, pady=4)
         default_source = os.getenv("OBS_SOURCE", "Capture1")
-        self.source_opt = ctk.CTkOptionMenu(obs_frame, values=[default_source], width=200)
+        self.source_opt = ctk.CTkOptionMenu(obs_frame, values=[default_source], width=300)
         self.source_opt.set(default_source)
         self.source_opt.grid(row=6, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="更新", command=self._refresh_obs_lists, width=80).grid(row=6, column=2, padx=8, pady=4)
 
         # Season (for per-season stats)
         ctk.CTkLabel(obs_frame, text="Season").grid(row=7, column=0, sticky="e", padx=8, pady=4)
-        self.season_entry = ctk.CTkEntry(obs_frame, width=160)
+        self.season_entry = ctk.CTkEntry(obs_frame, width=300)
         self.season_entry.insert(0, os.getenv("SEASON", ""))
         self.season_entry.grid(row=7, column=1, sticky="w", padx=8, pady=4)
 
         # Recordings directory (for image-video pairing)
         ctk.CTkLabel(obs_frame, text="Recordings Dir").grid(row=8, column=0, sticky="e", padx=8, pady=4)
-        self.recordings_dir_entry = ctk.CTkEntry(obs_frame, width=260)
+        self.recordings_dir_entry = ctk.CTkEntry(obs_frame, width=520)
         self.recordings_dir_entry.insert(0, os.getenv("RECORDINGS_DIR", ""))
         self.recordings_dir_entry.grid(row=8, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="Browse", width=80, command=self._browse_recordings_dir).grid(row=8, column=2, padx=8, pady=4)
@@ -195,12 +275,42 @@ class App(ctk.CTk):
             row=1, column=0, columnspan=2, sticky="w", padx=8, pady=2
         )
         ctk.CTkLabel(discord_frame, text="Webhook URL").grid(row=2, column=0, sticky="e", padx=8, pady=(4, 8))
-        self.discord_url_entry = ctk.CTkEntry(discord_frame, width=260, textvariable=self.discord_url_var)
+        try:
+            discord_frame.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
+        self.discord_url_entry = ctk.CTkEntry(discord_frame, width=520, textvariable=self.discord_url_var)
         self.discord_url_entry.grid(row=2, column=1, sticky="we", padx=(0, 8), pady=(4, 8))
+
+        # Output settings
+        output_frame = ctk.CTkFrame(sidebar, corner_radius=10)
+        output_frame.grid(row=3, column=0, sticky="we", padx=8, pady=6)
+        ctk.CTkLabel(output_frame, text="Output", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
+        )
+        # Koutiku dir (構築保管)
+        ctk.CTkLabel(output_frame, text="構築保管").grid(row=1, column=0, sticky="e", padx=8, pady=4)
+        try:
+            output_frame.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
+        self.koutiku_dir_entry = ctk.CTkEntry(output_frame, width=260)
+        self.koutiku_dir_entry.insert(0, os.getenv("OUTPUT_KOUTIKU_DIR", "koutiku"))
+        self.koutiku_dir_entry.grid(row=1, column=1, sticky="w", padx=8, pady=4)
+        # Haisin dir (配信用)
+        ctk.CTkLabel(output_frame, text="配信用").grid(row=2, column=0, sticky="e", padx=8, pady=4)
+        self.haisin_dir_entry = ctk.CTkEntry(output_frame, width=260)
+        self.haisin_dir_entry.insert(0, os.getenv("OUTPUT_HAISIN_DIR", "haisin"))
+        self.haisin_dir_entry.grid(row=2, column=1, sticky="w", padx=8, pady=4)
+        # Image format
+        ctk.CTkLabel(output_frame, text="Image Format").grid(row=3, column=0, sticky="e", padx=8, pady=(4, 8))
+        self.format_opt = ctk.CTkOptionMenu(output_frame, values=["PNG", "JPG", "WEBP"]) 
+        self.format_opt.set((os.getenv("OUTPUT_IMAGE_FORMAT", "PNG") or "PNG").upper())
+        self.format_opt.grid(row=3, column=1, sticky="w", padx=8, pady=(4, 8))
 
         # Controls
         control_frame = ctk.CTkFrame(sidebar, corner_radius=10)
-        control_frame.grid(row=3, column=0, sticky="we", padx=8, pady=6)
+        control_frame.grid(row=4, column=0, sticky="we", padx=8, pady=6)
         ctk.CTkLabel(control_frame, text="Controls", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
@@ -216,7 +326,7 @@ class App(ctk.CTk):
 
         # Theme
         theme_frame = ctk.CTkFrame(sidebar, corner_radius=10)
-        theme_frame.grid(row=4, column=0, sticky="we", padx=8, pady=(6, 12))
+        theme_frame.grid(row=5, column=0, sticky="we", padx=8, pady=(6, 12))
         ctk.CTkLabel(theme_frame, text="Theme", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
@@ -234,12 +344,28 @@ class App(ctk.CTk):
         right.grid(row=1, column=1, sticky="nsew", padx=(8, 16), pady=12)
         right.grid_rowconfigure(0, weight=1)
         right.grid_columnconfigure(0, weight=1)
+        # Keep a handle for width calculations in Gallery/Stats
+        self._right_frame = right
 
         tabs = ctk.CTkTabview(right)
         tabs.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
         tab_log = tabs.add("Log")
         tab_gallery = tabs.add("Gallery")
         tab_stats = tabs.add("Stats")
+        # Keep reference for tab detection
+        self._tabs = tabs
+        # Hook tab change to adjust layout (Log: left wide, Gallery/Stats: right wide)
+        try:
+            def _tab_click(value: str, _tabs=tabs):
+                # Ensure the clicked tab is actually selected before adjusting layout
+                try:
+                    _tabs.set(value)
+                except Exception:
+                    pass
+                self._on_tab_changed(value)
+            tabs._segmented_button.configure(command=_tab_click)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
         # Log tab
         tab_log.grid_rowconfigure(0, weight=1)
@@ -265,6 +391,11 @@ class App(ctk.CTk):
         # Optional: check updates in background
         try:
             self.after(1500, self._maybe_check_updates)
+        except Exception:
+            pass
+        # Apply initial layout for selected tab
+        try:
+            self.after(50, lambda: self._on_tab_changed(self._tabs.get()))  # type: ignore[attr-defined]
         except Exception:
             pass
 
@@ -776,7 +907,22 @@ class App(ctk.CTk):
         win, lose, dc, wr = stats_utils.compute_totals([(t, i, r) for (t, i, r) in rows if (not start or t.date() >= start) and (not end or t.date() <= end)])
         self._stats_summary.configure(text=f"Win: {win}  Lose: {lose}  DC: {dc}  WinRate: {wr:.1f}%")
 
-        img = stats_utils.render_winrate_chart(per_day, size=(900, 320))
+        # Dynamic chart size based on available width
+        try:
+            avail_w = self._stats_chart_label.winfo_width()
+            if not avail_w or avail_w <= 1:
+                avail_w = (self._right_frame.winfo_width() if getattr(self, "_right_frame", None) else self.winfo_width()) - 48
+        except Exception:
+            avail_w = 900
+        try:
+            w = max(900, min(1800, int(avail_w)))
+        except Exception:
+            w = 900
+        try:
+            h = max(320, min(600, int(w * 0.36)))
+        except Exception:
+            h = 360
+        img = stats_utils.render_winrate_chart(per_day, size=(w, h))
         try:
             ctki = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
             self._stats_chart_img_ref = ctki
@@ -804,7 +950,7 @@ class App(ctk.CTk):
 
     def _open_results_csv(self) -> None:
         base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
-        path = os.path.join(base_dir, "koutiku", "_results.csv")
+        path = paths_utils.get_results_csv_path(base_dir)
         try:
             if os.path.exists(path):
                 if sys.platform.startswith("win"):
@@ -917,6 +1063,10 @@ class App(ctk.CTk):
             "ENABLE_DISCORD": "true" if self.chk_discord_var.get() else "false",
             "DISCORD_WEBHOOK_URL": (self.discord_url_var.get() or "").strip(),
             "RECORDINGS_DIR": (self.recordings_dir_entry.get().strip() if getattr(self, "recordings_dir_entry", None) else os.getenv("RECORDINGS_DIR", "")),
+            # Output customization
+            "OUTPUT_KOUTIKU_DIR": (self.koutiku_dir_entry.get().strip() if getattr(self, "koutiku_dir_entry", None) else os.getenv("OUTPUT_KOUTIKU_DIR", "koutiku")),
+            "OUTPUT_HAISIN_DIR": (self.haisin_dir_entry.get().strip() if getattr(self, "haisin_dir_entry", None) else os.getenv("OUTPUT_HAISIN_DIR", "haisin")),
+            "OUTPUT_IMAGE_FORMAT": ((self.format_opt.get().strip().upper() if getattr(self, "format_opt", None) else os.getenv("OUTPUT_IMAGE_FORMAT", "PNG")) or "PNG"),
         }
 
         # Read existing lines to preserve comments/unknown keys
@@ -1144,12 +1294,19 @@ class App(ctk.CTk):
         # Scrollable grid for thumbnails
         self._gallery_scroll = ctk.CTkScrollableFrame(parent, corner_radius=8)
         self._gallery_scroll.grid(row=1, column=0, sticky="nsew")
-        for i in range(4):
-            self._gallery_scroll.grid_columnconfigure(i, weight=1)
+        # Columns will be adjusted dynamically in _reload_gallery based on available width
 
     def _current_koutiku_path(self) -> str:
         base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
-        return os.path.join(base_dir, "koutiku")
+        return paths_utils.get_koutiku_dir(base_dir)
+
+    def _current_haisin_dir(self) -> str:
+        base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
+        return paths_utils.get_haisin_dir(base_dir)
+
+    def _broadcast_image_path(self) -> str:
+        base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
+        return paths_utils.get_broadcast_output_path(base_dir)
 
     def _reload_gallery(self) -> None:
         # Token to ignore stale async callbacks from prior reloads
@@ -1271,10 +1428,26 @@ class App(ctk.CTk):
         items = items[:max_items]
         files = [p for (p, _mt) in items]
 
-        # Layout config
-        cols = 4
+        # Layout config (dynamic)
         thumb_w = int(os.getenv("GALLERY_THUMB", "240") or 240)
         pad = 8
+        # Determine number of columns from available width
+        try:
+            cw = self._gallery_scroll.winfo_width()
+            if not cw or cw <= 1:
+                cw = (self._right_frame.winfo_width() if getattr(self, "_right_frame", None) else self.winfo_width()) - 48
+        except Exception:
+            cw = 960
+        try:
+            cols = max(2, min(8, int(max(thumb_w + 2 * pad, cw) // (thumb_w + 2 * pad))))
+        except Exception:
+            cols = 4
+        # Reconfigure grid columns
+        try:
+            for i in range(cols):
+                self._gallery_scroll.grid_columnconfigure(i, weight=1)
+        except Exception:
+            pass
 
         # Shared placeholder to keep UI responsive while thumbnails load
         placeholder_ctk = None
@@ -1431,19 +1604,252 @@ class App(ctk.CTk):
         scale = min(max_w / float(w), max_h / float(h), 1.0)
         vw = int(w * scale)
         vh = int(h * scale)
-        view_img = img.copy().resize((vw, vh), Image.LANCZOS)
-        tk_img = ctk.CTkImage(light_image=view_img, dark_image=view_img, size=(vw, vh))
+        # Interactive editor setup (Canvas based)
+        # Keep current image in PIL, display via Tk PhotoImage on a Canvas
+        from PIL import ImageTk, ImageDraw, ImageFont  # local import to avoid global dependency noise
+        current_pil = img.copy()
+        display_scale = scale
+
+        def _compute_view_size(pil_img):
+            w0, h0 = pil_img.size
+            sc = min(max_w / float(w0), max_h / float(h0), 1.0)
+            return int(w0 * sc), int(h0 * sc), sc
+
+        vw, vh, display_scale = _compute_view_size(current_pil)
+
+        def _render_to_canvas():
+            nonlocal vw, vh, display_scale
+            vw, vh, display_scale = _compute_view_size(current_pil)
+            disp = current_pil.copy().resize((vw, vh), Image.LANCZOS)
+            imgtk = ImageTk.PhotoImage(disp)
+            try:
+                canvas.config(width=vw, height=vh)
+            except Exception:
+                pass
+            if hasattr(canvas, "_img_item_id"):
+                canvas.itemconfigure(canvas._img_item_id, image=imgtk)  # type: ignore[attr-defined]
+            else:
+                canvas._img_item_id = canvas.create_image(0, 0, anchor="nw", image=imgtk)  # type: ignore[attr-defined]
+            # keep a reference to avoid GC
+            top._canvas_imgtk_ref = imgtk  # type: ignore[attr-defined]
 
         frame = ctk.CTkFrame(top)
         frame.grid(row=0, column=0, padx=12, pady=12, sticky="nsew")
         try:
             frame.grid_columnconfigure(0, weight=0)
             frame.grid_columnconfigure(1, weight=1)
+            frame.grid_columnconfigure(2, weight=0)
         except Exception:
             pass
 
-        lbl = ctk.CTkLabel(frame, image=tk_img, text="")
-        lbl.grid(row=0, column=0, columnspan=2)
+        # Canvas to display and edit
+        canvas = tk.Canvas(frame, width=vw, height=vh, highlightthickness=0, bd=0)
+        canvas.grid(row=0, column=0, columnspan=3)
+        _render_to_canvas()
+
+        # Editing state
+        mode = {"value": "view"}  # one of: view, crop, arrow, text_place
+        temp_shape_id = {"id": None}
+        start_xy = {"x": 0, "y": 0}
+        pending_text = {"text": None}
+
+        def _to_orig(x: int, y: int):
+            # Canvas coordinates to original image coordinates
+            return int(x / max(display_scale, 1e-6)), int(y / max(display_scale, 1e-6))
+
+        def _on_down(event):
+            if mode["value"] not in ("crop", "arrow", "text_place"):
+                return
+            start_xy["x"], start_xy["y"] = event.x, event.y
+            if mode["value"] == "crop":
+                if temp_shape_id["id"] is not None:
+                    try:
+                        canvas.delete(temp_shape_id["id"])
+                    except Exception:
+                        pass
+                temp_shape_id["id"] = canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="yellow", width=2)
+            elif mode["value"] == "arrow":
+                if temp_shape_id["id"] is not None:
+                    try:
+                        canvas.delete(temp_shape_id["id"])
+                    except Exception:
+                        pass
+                temp_shape_id["id"] = canvas.create_line(event.x, event.y, event.x, event.y, fill="red", width=3, arrow=tk.LAST)
+            elif mode["value"] == "text_place":
+                # Place text immediately on click
+                txt = pending_text["text"] or ""
+                if not txt:
+                    return
+                ox, oy = _to_orig(event.x, event.y)
+                draw = ImageDraw.Draw(current_pil)
+                # Try truetype font, fallback to default
+                font = None
+                try:
+                    size = max(12, int(22 / max(display_scale, 1e-6)))
+                    font = ImageFont.truetype("arial.ttf", size)
+                except Exception:
+                    try:
+                        font = ImageFont.load_default()
+                    except Exception:
+                        font = None
+                try:
+                    draw.text((ox, oy), txt, fill=(255, 0, 0), font=font)
+                except Exception:
+                    # minimal fallback without font
+                    try:
+                        draw.text((ox, oy), txt, fill=(255, 0, 0))
+                    except Exception:
+                        pass
+                _render_to_canvas()
+                # Back to view mode after placing one text
+                mode["value"] = "view"
+
+        def _on_move(event):
+            if mode["value"] == "crop" and temp_shape_id["id"] is not None:
+                try:
+                    canvas.coords(temp_shape_id["id"], start_xy["x"], start_xy["y"], event.x, event.y)
+                except Exception:
+                    pass
+            elif mode["value"] == "arrow" and temp_shape_id["id"] is not None:
+                try:
+                    canvas.coords(temp_shape_id["id"], start_xy["x"], start_xy["y"], event.x, event.y)
+                except Exception:
+                    pass
+
+        def _on_up(event):
+            if mode["value"] == "crop" and temp_shape_id["id"] is not None:
+                x0, y0 = start_xy["x"], start_xy["y"]
+                x1, y1 = event.x, event.y
+                # normalize
+                xa, xb = sorted([x0, x1])
+                ya, yb = sorted([y0, y1])
+                ox1, oy1 = _to_orig(xa, ya)
+                ox2, oy2 = _to_orig(xb, yb)
+                # clamp
+                w0, h0 = current_pil.size
+                ox1 = max(0, min(w0 - 1, ox1))
+                oy1 = max(0, min(h0 - 1, oy1))
+                ox2 = max(ox1 + 1, min(w0, ox2))
+                oy2 = max(oy1 + 1, min(h0, oy2))
+                try:
+                    current_pil = current_pil.crop((ox1, oy1, ox2, oy2))
+                except Exception:
+                    pass
+                # cleanup overlay and re-render
+                try:
+                    if temp_shape_id["id"] is not None:
+                        canvas.delete(temp_shape_id["id"])
+                except Exception:
+                    pass
+                temp_shape_id["id"] = None
+                _render_to_canvas()
+                mode["value"] = "view"
+            elif mode["value"] == "arrow" and temp_shape_id["id"] is not None:
+                x0, y0 = start_xy["x"], start_xy["y"]
+                x1, y1 = event.x, event.y
+                ox0, oy0 = _to_orig(x0, y0)
+                ox1, oy1 = _to_orig(x1, y1)
+                try:
+                    draw = ImageDraw.Draw(current_pil)
+                    width = max(1, int(4 / max(display_scale, 1e-6)))
+                    draw.line((ox0, oy0, ox1, oy1), fill=(255, 0, 0), width=width)
+                    # simple arrow head
+                    import math
+                    ang = math.atan2(oy1 - oy0, ox1 - ox0)
+                    head_len = max(6, int(14 / max(display_scale, 1e-6)))
+                    head_ang = math.pi / 6.0
+                    xh1 = ox1 - head_len * math.cos(ang - head_ang)
+                    yh1 = oy1 - head_len * math.sin(ang - head_ang)
+                    xh2 = ox1 - head_len * math.cos(ang + head_ang)
+                    yh2 = oy1 - head_len * math.sin(ang + head_ang)
+                    draw.polygon([(ox1, oy1), (xh1, yh1), (xh2, yh2)], fill=(255, 0, 0))
+                except Exception:
+                    pass
+                try:
+                    if temp_shape_id["id"] is not None:
+                        canvas.delete(temp_shape_id["id"])
+                except Exception:
+                    pass
+                temp_shape_id["id"] = None
+                _render_to_canvas()
+                mode["value"] = "view"
+
+        try:
+            canvas.bind("<Button-1>", _on_down)
+            canvas.bind("<B1-Motion>", _on_move)
+            canvas.bind("<ButtonRelease-1>", _on_up)
+        except Exception:
+            pass
+
+        # Editor toolbar
+        toolbar = ctk.CTkFrame(frame, fg_color="transparent")
+        toolbar.grid(row=1, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        def _set_mode_crop():
+            mode["value"] = "crop"
+        def _set_mode_arrow():
+            mode["value"] = "arrow"
+        def _set_mode_text():
+            t = sd.askstring("テキスト", "テキストを入力:")
+            if not t:
+                return
+            pending_text["text"] = t
+            mode["value"] = "text_place"
+        def _save_as():
+            fmt_map = {
+                "PNG": (".png", "PNG"),
+                "JPG": (".jpg", "JPEG"),
+                "WEBP": (".webp", "WEBP"),
+            }
+            cur_fmt = (self.format_opt.get().strip().upper() if getattr(self, "format_opt", None) else "PNG")
+            def_ext, pil_fmt = fmt_map.get(cur_fmt, (".png", "PNG"))
+            out = fd.asksaveasfilename(defaultextension=def_ext, filetypes=[("PNG", ".png"), ("JPEG", ".jpg"), ("WEBP", ".webp")], title="画像を保存")
+            if not out:
+                return
+            try:
+                current_pil.save(out, format=pil_fmt)
+            except Exception as e:
+                mb.showerror("保存", f"保存に失敗しました\n{e}")
+        def _save_to_broadcast():
+            path = self._broadcast_image_path()
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+            except Exception:
+                pass
+            cur_fmt = (self.format_opt.get().strip().upper() if getattr(self, "format_opt", None) else "PNG")
+            pil_fmt = {"PNG": "PNG", "JPG": "JPEG", "WEBP": "WEBP"}.get(cur_fmt, "PNG")
+            try:
+                current_pil.save(path, format=pil_fmt)
+                try:
+                    self._append_log(f"[編集] 配信用に保存: {path}")
+                except Exception:
+                    pass
+                mb.showinfo("保存", f"配信用に保存しました:\n{path}")
+            except Exception as e:
+                mb.showerror("保存", f"保存に失敗しました\n{e}")
+
+        ctk.CTkButton(toolbar, text="トリミング", width=90, command=_set_mode_crop).grid(row=0, column=0, padx=(0, 6))
+        ctk.CTkButton(toolbar, text="矢印", width=70, command=_set_mode_arrow).grid(row=0, column=1, padx=(0, 6))
+        ctk.CTkButton(toolbar, text="テキスト", width=80, command=_set_mode_text).grid(row=0, column=2, padx=(0, 12))
+        ctk.CTkButton(toolbar, text="保存…", width=90, command=_save_as).grid(row=0, column=3, padx=(0, 6))
+        ctk.CTkButton(toolbar, text="配信用に保存", width=120, command=_save_to_broadcast).grid(row=0, column=4, padx=(0, 6))
+
+        # Remove all toolbar buttons and keep only Save…
+        try:
+            for _w in list(toolbar.winfo_children()):
+                _w.destroy()
+        except Exception:
+            pass
+        def _save_as_only():
+            fmt_map = {"PNG": (".png", "PNG"), "JPG": (".jpg", "JPEG"), "WEBP": (".webp", "WEBP")}
+            cur_fmt = (self.format_opt.get().strip().upper() if getattr(self, "format_opt", None) else "PNG")
+            def_ext, pil_fmt = fmt_map.get(cur_fmt, (".png", "PNG"))
+            out = fd.asksaveasfilename(defaultextension=def_ext, filetypes=[("PNG", ".png"), ("JPEG", ".jpg"), ("WEBP", ".webp")], title="画像を保存")
+            if out:
+                try:
+                    current_pil.save(out, format=pil_fmt)
+                except Exception as e:
+                    mb.showerror("保存", f"保存に失敗しました\n{e}")
+        ctk.CTkButton(toolbar, text="保存…", width=100, command=_save_as_only).grid(row=0, column=0, padx=(0, 6))
 
         # Live Tag Editor (auto-saves as you type)
         try:
@@ -1452,10 +1858,10 @@ class App(ctk.CTk):
             self._load_gallery_tags()
             cur_tags = self._gallery_tags_map.get(name, [])
 
-            ctk.CTkLabel(frame, text="Tags").grid(row=1, column=0, sticky="e", padx=(0, 8), pady=(10, 0))
+            ctk.CTkLabel(frame, text="Tags").grid(row=2, column=0, sticky="e", padx=(0, 8), pady=(10, 0))
             tag_var = tk.StringVar(value=", ".join(cur_tags))
             tag_entry = ctk.CTkEntry(frame, textvariable=tag_var)
-            tag_entry.grid(row=1, column=1, sticky="we", pady=(10, 0))
+            tag_entry.grid(row=2, column=1, sticky="we", pady=(10, 0))
 
             def _on_tags_typing(event=None, fname=name):
                 # Debounce saves per file
@@ -1490,7 +1896,7 @@ class App(ctk.CTk):
 
             # Suggestions area under the entry
             sugg_frame = ctk.CTkFrame(frame, fg_color="transparent")
-            sugg_frame.grid(row=2, column=0, columnspan=2, sticky="we")
+            sugg_frame.grid(row=3, column=0, columnspan=2, sticky="we")
 
             def _update_suggestions():
                 # Clear previous
@@ -1554,9 +1960,8 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-        # Keep a reference on the toplevel to avoid GC
-        top._img_ref = tk_img  # type: ignore[attr-defined]
-        top.geometry(f"{vw+40}x{vh+120}")
+        # Keep a reference on the toplevel to avoid GC and set size
+        top.geometry(f"{vw+60}x{vh+180}")
 
         # Close on ESC
         try:

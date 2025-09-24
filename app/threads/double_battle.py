@@ -11,6 +11,7 @@ import numpy as np
 
 from app.obs_client import ObsClient
 from app.utils.image import crop_by_coords_list, crop_image_by_rect, match_template
+from app.utils import paths as paths_utils
 from app.utils.logging import UiLogger
 
 
@@ -42,8 +43,8 @@ class DoubleBattleThread(threading.Thread):
 
         # Paths
         self._handan = os.path.join(base_dir, "handantmp")
-        self._haisin = os.path.join(base_dir, "haisin")
-        self._koutiku = os.path.join(base_dir, "koutiku")
+        self._haisin = paths_utils.get_haisin_dir(base_dir)
+        self._koutiku = paths_utils.get_koutiku_dir(base_dir)
         os.makedirs(self._handan, exist_ok=True)
         os.makedirs(self._haisin, exist_ok=True)
         os.makedirs(self._koutiku, exist_ok=True)
@@ -51,7 +52,8 @@ class DoubleBattleThread(threading.Thread):
         self._scene_path = os.path.join(self._handan, "scene.png")
         self._masu_path = os.path.join(self._handan, "masu.png")
         self._haisinsensyutu_path = os.path.join(self._haisin, "haisinsensyutu.png")
-        self._haisinyou_path = os.path.join(self._haisin, "haisinyou.png")
+        # Broadcast output path is configurable (dir/name/ext)
+        self._haisinyou_path = paths_utils.get_broadcast_output_path(base_dir)
 
         self._ref_files = [f"banme{i}.jpg" for i in range(1, 5)]
         self._ref_paths = [os.path.join(self._handan, f) for f in self._ref_files]
@@ -117,7 +119,8 @@ class DoubleBattleThread(threading.Thread):
 
             # Save timestamped copy
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            dst = os.path.join(self._koutiku, f"{ts}.png")
+            ext = paths_utils.get_output_format_ext()
+            dst = os.path.join(self._koutiku, f"{ts}.{ext}")
             cv2.imwrite(dst, crop)
             self._log.log(f"[ダブルバトル] 保存しました: {dst}")
 
