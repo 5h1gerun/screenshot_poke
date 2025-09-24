@@ -10,12 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
     steps:
       - name: Build fancy embed payload
-        id: build
         run: |
           set -euo pipefail
-
           E="$GITHUB_EVENT_PATH"
 
           ACTION=$(jq -r '.action' "$E")
@@ -25,33 +24,27 @@ jobs:
           URL=$(jq -r '.release.html_url' "$E")
           BODY=$(jq -r '.release.body // ""' "$E")
           AVATAR=$(jq -r '.release.author.avatar_url // ""' "$E")
-          PRERELEASE=$(jq -r '.release.prerelease' "$E")
           PUBLISHED_AT=$(jq -r '.release.published_at // .release.created_at // ""' "$E")
 
-          # 本文スニペット（改行→スペース、最大380文字）
           SNIP=$(printf "%s" "$BODY" | tr -d '\r' | tr '\n' ' ' | sed 's/  \+/ /g' | cut -c1-380)
           [ -n "$BODY" ] && [ "${#BODY}" -gt "${#SNIP}" ] && SNIP="${SNIP}…"
 
-          # アセット（最初の3件）
           ASSETS_TXT=$(jq -r '[.release.assets[]? | {name, url: .browser_download_url}] | .[:3] | if length==0 then "" else ( map("[" + .name + "](" + .url + ")") | join("\n") ) end' "$E")
           FIRST_ASSET_URL=$(jq -r '.release.assets[0]?.browser_download_url // ""' "$E")
 
-          # アクション別の色
           case "$ACTION" in
-            published)   COLOR=3066993 ;;   # 緑
-            edited)      COLOR=15844367 ;;  # 黄
-            prereleased) COLOR=10181046 ;;  # 紫
+            published)   COLOR=3066993 ;;
+            edited)      COLOR=15844367 ;;
+            prereleased) COLOR=10181046 ;;
             *)           COLOR=5814783 ;;
           esac
 
-          # タイトル
           PREFIX="ℹ️ リリース"
           [ "$ACTION" = "published" ]   && PREFIX="🚀 公開"
           [ "$ACTION" = "edited" ]      && PREFIX="✏️ 更新"
           [ "$ACTION" = "prereleased" ] && PREFIX="🧪 プレリリース"
           TITLE="$PREFIX: ${NAME:-$TAG}"
 
-          # Embed本体
           EMBED=$(jq -nc \
             --arg title "$TITLE" \
             --arg url "$URL" \
@@ -81,7 +74,6 @@ jobs:
               }]
             }')
 
-          # リンクボタン（Release, 先頭アセット）を追加
           if [ -n "$FIRST_ASSET_URL" ]; then
             EMBED=$(echo "$EMBED" | jq --arg rel "$URL" --arg dl "$FIRST_ASSET_URL" \
               '. + {components: [{type:1, components:[
@@ -95,11 +87,11 @@ jobs:
               ]}]}')
           fi
 
-          echo "body=$(printf '%s' "$EMBED")" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$EMBED" > payload.json
 
       - name: Send to Discord
         run: |
+          set -euo pipefail
           curl -sS -H "Content-Type: application/json; charset=utf-8" \
-               -X POST \
-               -d '${{ steps.build.outputs.body }}' \
+               -X POST --data-binary @payload.json \
                "$WEBHOOK"
