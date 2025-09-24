@@ -3,7 +3,7 @@ name: Notify Discord on Release
 on:
   release:
     # すべて拾っておく（必要なら後でifで絞る）
-    types: [published, edited, created, deleted, unpublished, prereleased]
+    types: [published, edited]
   workflow_dispatch:
 
 jobs:
