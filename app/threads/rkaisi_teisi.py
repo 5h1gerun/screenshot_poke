@@ -10,6 +10,7 @@ import cv2
 from app.obs_client import ObsClient
 from app.utils.image import Rect, crop_image_by_rect, match_template
 from app.utils.logging import UiLogger
+from app.utils import pairs as pairs_utils
 
 
 class RkaisiTeisiThread(threading.Thread):
@@ -27,6 +28,7 @@ class RkaisiTeisiThread(threading.Thread):
         self._log = logger or UiLogger()
         self._stop = threading.Event()
         self._recording = False
+        self._rec_start_ts: Optional[float] = None
         self._source = source_name
 
         # Paths
@@ -55,6 +57,13 @@ class RkaisiTeisiThread(threading.Thread):
                 self._log.log("[録開始/停止] 終了時に録画を停止します")
                 try:
                     self._obs.stop_recording()
+                except Exception:
+                    pass
+                # Try to associate images with the recording window
+                try:
+                    if self._rec_start_ts is not None:
+                        root_base = os.path.dirname(self._base)
+                        pairs_utils.associate_recording_window(root_base, self._rec_start_ts, time.time())
                 except Exception:
                     pass
             self._log.log("[録開始/停止] スレッド停止")
@@ -86,6 +95,7 @@ class RkaisiTeisiThread(threading.Thread):
             self._log.log("[録開始/停止] 'masu1' 検出 → 録画開始")
             self._obs.start_recording()
             self._recording = True
+            self._rec_start_ts = time.time()
             if self._stop.wait(140):
                 return
             return
@@ -94,6 +104,13 @@ class RkaisiTeisiThread(threading.Thread):
             self._log.log("[録開始/停止] 'mark' 検出 → 録画停止")
             self._obs.stop_recording()
             self._recording = False
+            try:
+                if self._rec_start_ts is not None:
+                    root_base = os.path.dirname(self._base)
+                    pairs_utils.associate_recording_window(root_base, self._rec_start_ts, time.time())
+            except Exception:
+                pass
+            self._rec_start_ts = None
             if self._stop.wait(0.5):
                 return
 

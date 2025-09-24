@@ -81,6 +81,7 @@ class App(ctk.CTk):
         # Keep a handle to the search entry to detach textvariable on rebuild
         self._gallery_search_entry: Optional[ctk.CTkEntry] = None
         self._gallery_tags_map: Dict[str, List[str]] = {}
+        self._gallery_pairs_map: Dict[str, str] = {}
         # Gallery state
         self._thumb_refs: list[ctk.CTkImage] = []
         self._auto_refresh_var = tk.BooleanVar(value=True)
@@ -167,6 +168,14 @@ class App(ctk.CTk):
         self.season_entry = ctk.CTkEntry(obs_frame, width=160)
         self.season_entry.insert(0, os.getenv("SEASON", ""))
         self.season_entry.grid(row=7, column=1, sticky="w", padx=8, pady=4)
+
+        # Recordings directory (for image-video pairing)
+        ctk.CTkLabel(obs_frame, text="Recordings Dir").grid(row=8, column=0, sticky="e", padx=8, pady=4)
+        self.recordings_dir_entry = ctk.CTkEntry(obs_frame, width=260)
+        self.recordings_dir_entry.insert(0, os.getenv("RECORDINGS_DIR", ""))
+        self.recordings_dir_entry.grid(row=8, column=1, sticky="w", padx=8, pady=4)
+        ctk.CTkButton(obs_frame, text="Browse", width=80, command=self._browse_recordings_dir).grid(row=8, column=2, padx=8, pady=4)
+        ctk.CTkButton(obs_frame, text="From OBS", width=90, command=self._fetch_recordings_dir_from_obs).grid(row=8, column=3, padx=(0,8), pady=4)
 
         # Scripts
         script_frame = ctk.CTkFrame(sidebar, corner_radius=10)
@@ -600,6 +609,17 @@ class App(ctk.CTk):
             self._append_log("[アプリ] OBSに接続しました")
             # Persist settings on successful connect
             self._save_settings()
+            # If recordings dir is empty, try to fetch from OBS now
+            try:
+                if not (self.recordings_dir_entry.get().strip() if getattr(self, "recordings_dir_entry", None) else ""):
+                    folder = self._obs.get_recordings_dir()
+                    if folder:
+                        self.recordings_dir_entry.delete(0, tk.END)
+                        self.recordings_dir_entry.insert(0, folder)
+                        self._save_settings()
+                        self._append_log(f"[OBS] Recording フォルダ取得: {folder}")
+            except Exception:
+                pass
         except Exception as e:
             mb.showerror("接続エラー", f"OBS への接続に失敗しました。\n{e}")
             self._append_log(f"[アプリ] 接続エラー: {e}")
@@ -896,6 +916,7 @@ class App(ctk.CTk):
             "OBS_SOURCE": self.source_opt.get().strip() if getattr(self, "source_opt", None) else os.getenv("OBS_SOURCE", "Capture1"),
             "ENABLE_DISCORD": "true" if self.chk_discord_var.get() else "false",
             "DISCORD_WEBHOOK_URL": (self.discord_url_var.get() or "").strip(),
+            "RECORDINGS_DIR": (self.recordings_dir_entry.get().strip() if getattr(self, "recordings_dir_entry", None) else os.getenv("RECORDINGS_DIR", "")),
         }
 
         # Read existing lines to preserve comments/unknown keys
@@ -925,9 +946,71 @@ class App(ctk.CTk):
         try:
             Path(dotenv_path).write_text("".join(out_lines), encoding="utf-8")
             self._append_log(f"[アプリ] 設定を保存しました -> {dotenv_path}")
+            # Also update process env so new settings take effect without restart
+            try:
+                for k, v in cfg.items():
+                    os.environ[k] = v
+            except Exception:
+                pass
         except Exception as e:
             mb.showerror("保存エラー", f"設定の保存に失敗しました: {dotenv_path}\n{e}")
             return
+
+    def _browse_recordings_dir(self) -> None:
+        try:
+            path = fd.askdirectory(title="Select Recordings Directory", initialdir=self.recordings_dir_entry.get().strip() or os.path.expanduser("~"))
+        except Exception:
+            path = ""
+        if path:
+            try:
+                self.recordings_dir_entry.delete(0, tk.END)
+                self.recordings_dir_entry.insert(0, path)
+            except Exception:
+                pass
+
+    def _fetch_recordings_dir_from_obs(self) -> None:
+        # Use existing connection if available; else create temp client
+        client = self._obs
+        created_temp = False
+        try:
+            if client is None:
+                try:
+                    host = self.host_entry.get().strip()
+                    port = int(self.port_entry.get())
+                    password = self.pass_entry.get()
+                except Exception:
+                    mb.showerror("入力エラー", "OBS 接続情報を確認してください")
+                    return
+                client = ObsClient(host, port, password, self._lock)
+                client.connect()
+                created_temp = True
+            folder = None
+            try:
+                folder = client.get_recordings_dir()
+            except Exception:
+                folder = None
+            if folder and isinstance(folder, str):
+                try:
+                    self.recordings_dir_entry.delete(0, tk.END)
+                    self.recordings_dir_entry.insert(0, folder)
+                except Exception:
+                    pass
+                self._append_log(f"[OBS] Recording フォルダ取得: {folder}")
+                # Optionally persist immediately
+                try:
+                    self._save_settings()
+                except Exception:
+                    pass
+            else:
+                mb.showwarning("未取得", "OBS から録画フォルダを取得できませんでした。手動で指定してください。")
+        except Exception as e:
+            mb.showerror("取得エラー", f"録画フォルダの取得に失敗しました\n{e}")
+        finally:
+            if created_temp and client is not None:
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
 
     # --- auto update ---
     def _maybe_check_updates(self) -> None:
@@ -1112,8 +1195,9 @@ class App(ctk.CTk):
         except Exception:
             items = []
 
-        # Load tags and filter by search query
+        # Load tags/pairs and filter by search query
         self._load_gallery_tags()
+        self._load_gallery_pairs()
         # Keep a copy before filtering for robust fallback
         items_all = list(items)
         query = (self._gallery_search_var.get() or "").strip()
@@ -1275,6 +1359,19 @@ class App(ctk.CTk):
                         tag_lbl.grid(row=1, column=0, sticky="n", pady=(4, 0))
                         try:
                             tag_lbl.bind("<Button-3>", handler)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Show video open button if paired
+                try:
+                    vpath = self._gallery_pairs_map.get(fname)
+                    if vpath and os.path.exists(vpath):
+                        vbtn = ctk.CTkButton(cell, text="動画を開く", width=120, command=lambda vp=vpath: self._open_video(vp))
+                        vbtn.grid(row=2, column=0, pady=(4, 0))
+                        try:
+                            vbtn.bind("<Button-3>", handler)
                         except Exception:
                             pass
                 except Exception:
@@ -1498,6 +1595,16 @@ class App(ctk.CTk):
         menu.add_command(label="エクスプローラで開く", command=lambda p=path: self._gallery_open_in_explorer(p))
         menu.add_command(label="パスをコピー", command=lambda p=path: self._gallery_copy_path(p))
         menu.add_separator()
+        # Video actions if paired
+        try:
+            name = os.path.basename(path)
+            vpath = self._gallery_pairs_map.get(name)
+            if vpath and os.path.exists(vpath):
+                menu.add_command(label="動画を開く", command=lambda vp=vpath: self._open_video(vp))
+                menu.add_command(label="動画パスをコピー", command=lambda vp=vpath: self._gallery_copy_path(vp))
+                menu.add_separator()
+        except Exception:
+            pass
         menu.add_command(label="タグを追加…", command=lambda p=path: self._gallery_add_tag(p))
         menu.add_command(label="タグを削除…", command=lambda p=path: self._gallery_remove_tag(p))
         menu.add_command(label="タグを表示", command=lambda p=path: self._gallery_show_tags(p))
@@ -1538,6 +1645,9 @@ class App(ctk.CTk):
     def _tags_json_path(self) -> str:
         return os.path.join(self._current_koutiku_path(), "_tags.json")
 
+    def _pairs_json_path(self) -> str:
+        return os.path.join(self._current_koutiku_path(), "_pairs.json")
+
     def _load_gallery_tags(self) -> None:
         try:
             with open(self._tags_json_path(), "r", encoding="utf-8") as f:
@@ -1546,6 +1656,29 @@ class App(ctk.CTk):
                     self._gallery_tags_map = {k: list(v) for k, v in data.items() if isinstance(v, list)}
         except Exception:
             self._gallery_tags_map = {}
+
+    def _load_gallery_pairs(self) -> None:
+        try:
+            with open(self._pairs_json_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    # keep only str->str
+                    self._gallery_pairs_map = {str(k): str(v) for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+                else:
+                    self._gallery_pairs_map = {}
+        except Exception:
+            self._gallery_pairs_map = {}
+
+    def _open_video(self, path: str) -> None:
+        try:
+            if os.name == "nt":
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            mb.showerror("エラー", f"動画を開けませんでした\n{e}")
 
     def _save_gallery_tags(self) -> None:
         try:
