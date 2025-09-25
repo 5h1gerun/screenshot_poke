@@ -9,7 +9,11 @@ from typing import Dict, List, Optional, Tuple
 from app.utils import paths as paths_utils
 
 
-_NAME_TS_RE = re.compile(r"^(?P<ts>\d{8}_\d{6})")
+# Support both legacy (YYYYMMDD_HHMMSS) and OBS-style
+# - Preferred (current): YYYY-MM-DD_HH-MM-SS
+# - Also accept:        YYYY-MM-DD HH-MM-SS (space)
+_NAME_TS_RE_OBS = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}[ _]\d{2}-\d{2}-\d{2})")
+_NAME_TS_RE_LEGACY = re.compile(r"^(?P<ts>\d{8}_\d{6})")
 
 
 def _pairs_json_path(base_dir: str) -> str:
@@ -40,15 +44,27 @@ def save_pairs(base_dir: str, mapping: Dict[str, str]) -> None:
 
 
 def _parse_name_ts(name: str) -> Optional[dt.datetime]:
-    m = _NAME_TS_RE.match(name)
-    if not m:
-        return None
-    s = m.group("ts")
-    try:
-        # local time
-        return dt.datetime.strptime(s, "%Y%m%d_%H%M%S")
-    except Exception:
-        return None
+    # Try OBS-style first
+    m = _NAME_TS_RE_OBS.match(name)
+    if m:
+        s = m.group("ts")
+        try:
+            # Try underscore first (preferred)
+            try:
+                return dt.datetime.strptime(s, "%Y-%m-%d_%H-%M-%S")
+            except Exception:
+                return dt.datetime.strptime(s, "%Y-%m-%d %H-%M-%S")
+        except Exception:
+            pass
+    # Fallback to legacy format
+    m2 = _NAME_TS_RE_LEGACY.match(name)
+    if m2:
+        s2 = m2.group("ts")
+        try:
+            return dt.datetime.strptime(s2, "%Y%m%d_%H%M%S")
+        except Exception:
+            pass
+    return None
 
 
 def list_images_in_range(base_dir: str, start: float, end: float) -> List[str]:

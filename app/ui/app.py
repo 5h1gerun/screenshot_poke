@@ -98,6 +98,10 @@ class App(ctk.CTk):
             max_workers=int(os.getenv("GALLERY_WORKERS", "4") or 4)
         )
         self._gallery_load_token: Optional[int] = None
+        # Gallery UI helpers
+        self._gallery_placeholder_img: Optional[ctk.CTkImage] = None
+        self._gallery_last_width: int = 0
+        self._gallery_resize_after_id: Optional[str] = None
 
         self._build_ui()
         # Graceful shutdown on window close
@@ -261,9 +265,9 @@ class App(ctk.CTk):
         script_frame = ctk.CTkFrame(sidebar, corner_radius=10)
         script_frame.grid(row=1, column=0, sticky="we", padx=8, pady=6)
         ctk.CTkLabel(script_frame, text="Scripts", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=8, pady=(8, 4))
-        ctk.CTkCheckBox(script_frame, text="構築のスクリーンショット", variable=self.chk_double_var).pack(anchor="w", padx=8, pady=2)
-        ctk.CTkCheckBox(script_frame, text="自動録画開始・停止", variable=self.chk_rkaisi_var).pack(anchor="w", padx=8, pady=2)
-        ctk.CTkCheckBox(script_frame, text="戦績を自動更新", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=2)
+        ctk.CTkSwitch(script_frame, text="構築のスクリーンショット", variable=self.chk_double_var).pack(anchor="w", padx=8, pady=2)
+        ctk.CTkSwitch(script_frame, text="自動録画開始・停止", variable=self.chk_rkaisi_var).pack(anchor="w", padx=8, pady=2)
+        ctk.CTkSwitch(script_frame, text="戦績を自動更新", variable=self.chk_syouhai_var).pack(anchor="w", padx=8, pady=2)
 
         # Discord webhook controls
         discord_frame = ctk.CTkFrame(sidebar, corner_radius=10)
@@ -271,7 +275,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(discord_frame, text="Discord", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
         )
-        ctk.CTkCheckBox(discord_frame, text="構築をDiscordへ送信", variable=self.chk_discord_var).grid(
+        ctk.CTkSwitch(discord_frame, text="構築をDiscordへ送信", variable=self.chk_discord_var).grid(
             row=1, column=0, columnspan=2, sticky="w", padx=8, pady=2
         )
         ctk.CTkLabel(discord_frame, text="Webhook URL").grid(row=2, column=0, sticky="e", padx=8, pady=(4, 8))
@@ -571,6 +575,16 @@ class App(ctk.CTk):
                 self._gallery_after_id = None
         except Exception:
             pass
+        # Cancel gallery resize debounce timer
+        try:
+            if getattr(self, "_gallery_resize_after_id", None):
+                try:
+                    self.after_cancel(self._gallery_resize_after_id)
+                except Exception:
+                    pass
+                self._gallery_resize_after_id = None
+        except Exception:
+            pass
         # Shutdown thumbnail executor
         try:
             if getattr(self, "_thumb_executor", None):
@@ -845,7 +859,8 @@ class App(ctk.CTk):
         parent.grid_columnconfigure(0, weight=1)
 
         ctrl = ctk.CTkFrame(parent)
-        ctrl.grid(row=0, column=0, sticky="we", padx=8, pady=8)
+        # Align horizontal padding with Gallery (Tabview already has outer 12px)
+        ctrl.grid(row=0, column=0, sticky="we", padx=0, pady=8)
         ctrl.grid_columnconfigure(4, weight=1)
 
         ctk.CTkLabel(ctrl, text="期間 (YYYY-MM-DD)").grid(row=0, column=0, padx=(8, 6))
@@ -867,10 +882,12 @@ class App(ctk.CTk):
         ctk.CTkButton(ctrl, text="Save Chart", width=100, command=self._save_stats_chart).grid(row=0, column=8, padx=(0, 8))
 
         self._stats_summary = ctk.CTkLabel(parent, text="", anchor="w")
-        self._stats_summary.grid(row=1, column=0, sticky="we", padx=12)
+        # Remove extra horizontal padding to match Gallery width
+        self._stats_summary.grid(row=1, column=0, sticky="we", padx=0)
 
         self._stats_chart_label = ctk.CTkLabel(parent, text="")
-        self._stats_chart_label.grid(row=2, column=0, sticky="nsew", padx=12, pady=12)
+        # Match Gallery horizontal padding; keep some vertical breathing room
+        self._stats_chart_label.grid(row=2, column=0, sticky="nsew", padx=0, pady=12)
         self._stats_chart_img_ref: Optional[ctk.CTkImage] = None
 
         try:
@@ -914,14 +931,24 @@ class App(ctk.CTk):
                 avail_w = (self._right_frame.winfo_width() if getattr(self, "_right_frame", None) else self.winfo_width()) - 48
         except Exception:
             avail_w = 900
+        # Clamp chart size to a smaller, consistent range
         try:
-            w = max(900, min(1800, int(avail_w)))
+            _max_w = int(os.getenv("STATS_CHART_MAX_W", "1200") or 1200)
         except Exception:
-            w = 900
+            _max_w = 1200
         try:
-            h = max(320, min(600, int(w * 0.36)))
+            _min_w = int(os.getenv("STATS_CHART_MIN_W", "700") or 700)
         except Exception:
-            h = 360
+            _min_w = 700
+        try:
+            w = max(_min_w, min(_max_w, int(avail_w)))
+        except Exception:
+            w = max(_min_w, 900)
+        try:
+            # Slightly flatter aspect ratio to reduce height
+            h = max(280, min(500, int(w * 0.30)))
+        except Exception:
+            h = 320
         img = stats_utils.render_winrate_chart(per_day, size=(w, h))
         try:
             ctki = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
@@ -1295,6 +1322,42 @@ class App(ctk.CTk):
         self._gallery_scroll = ctk.CTkScrollableFrame(parent, corner_radius=8)
         self._gallery_scroll.grid(row=1, column=0, sticky="nsew")
         # Columns will be adjusted dynamically in _reload_gallery based on available width
+        try:
+            # Recalculate layout when the available width changes (debounced)
+            self._gallery_scroll.bind("<Configure>", self._on_gallery_configure)
+        except Exception:
+            pass
+
+    def _on_gallery_configure(self, event=None):
+        # Only react while Gallery tab is active
+        try:
+            name = self._tabs.get() if getattr(self, "_tabs", None) else ""
+            if (name or "").strip().lower() != "gallery":
+                return
+        except Exception:
+            pass
+        try:
+            w = int(getattr(event, "width", 0) or self._gallery_scroll.winfo_width())
+        except Exception:
+            w = 0
+        if w <= 1:
+            return
+        try:
+            if abs(w - self._gallery_last_width) < 40:
+                return
+            self._gallery_last_width = w
+        except Exception:
+            self._gallery_last_width = w
+        # Debounce rapid size events
+        try:
+            if self._gallery_resize_after_id is not None:
+                self.after_cancel(self._gallery_resize_after_id)
+        except Exception:
+            pass
+        try:
+            self._gallery_resize_after_id = self.after(120, self._reload_gallery)
+        except Exception:
+            self._gallery_resize_after_id = None
 
     def _current_koutiku_path(self) -> str:
         base_dir = self.base_dir_entry.get().strip() if getattr(self, "base_dir_entry", None) else self._resolve_base_dir_default()
@@ -1438,10 +1501,15 @@ class App(ctk.CTk):
                 cw = (self._right_frame.winfo_width() if getattr(self, "_right_frame", None) else self.winfo_width()) - 48
         except Exception:
             cw = 960
+        # subtract a small margin for scrollbars/padding to avoid overflow
         try:
-            cols = max(2, min(8, int(max(thumb_w + 2 * pad, cw) // (thumb_w + 2 * pad))))
+            cw = max(1, int(cw) - 24)
         except Exception:
-            cols = 4
+            pass
+        try:
+            cols = max(1, min(8, int(max(thumb_w + 2 * pad, cw) // (thumb_w + 2 * pad))))
+        except Exception:
+            cols = 2
         # Reconfigure grid columns
         try:
             for i in range(cols):
@@ -1455,7 +1523,11 @@ class App(ctk.CTk):
         try:
             from PIL import Image as _PILImage
             _ph = _PILImage.new("RGB", (thumb_w, placeholder_h), color=(64, 64, 64))
-            placeholder_ctk = ctk.CTkImage(light_image=_ph, dark_image=_ph, size=(thumb_w, placeholder_h))
+            # Keep a persistent reference to avoid GC when switching tabs
+            self._gallery_placeholder_img = ctk.CTkImage(
+                light_image=_ph, dark_image=_ph, size=(thumb_w, placeholder_h)
+            )
+            placeholder_ctk = self._gallery_placeholder_img
         except Exception:
             pass
 
@@ -1488,7 +1560,8 @@ class App(ctk.CTk):
                 img_pil, tw, th = result
                 tk_img = ctk.CTkImage(light_image=img_pil, dark_image=img_pil, size=(tw, th))
                 self._thumb_refs.append(tk_img)
-                btn.configure(image=tk_img, width=tw + 8, height=th + 36)
+                # Ensure image is never cropped by the button height
+                btn.configure(image=tk_img, text="", width=tw, height=th + 2)
             except Exception:
                 pass
 
@@ -1509,13 +1582,25 @@ class App(ctk.CTk):
                 btn = ctk.CTkButton(
                     cell,
                     image=placeholder_ctk,
-                    text=fname,
-                    compound="top",
-                    width=(thumb_w + 8),
-                    height=(placeholder_h + 36),
+                    text="",
+                    width=thumb_w,
+                    height=placeholder_h + 2,
                     command=lambda p=path: self._open_image_viewer(p),
                 )
                 btn.grid(row=0, column=0, sticky="n")
+                # File name under thumbnail (avoid image cropping by button text)
+                try:
+                    _name = fname
+                    if len(_name) > 52:
+                        _name = _name[:23] + "..." + _name[-24:]
+                    name_lbl = ctk.CTkLabel(cell, text=_name, anchor="center")
+                    name_lbl.grid(row=1, column=0, sticky="n", pady=(4, 0))
+                    try:
+                        name_lbl.bind("<Button-3>", handler)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 try:
                     handler = lambda e, p=path: self._open_gallery_context_menu(e, p)
                     btn.bind("<Button-3>", handler)
@@ -1529,7 +1614,7 @@ class App(ctk.CTk):
                     txt = ", ".join(tags)
                     if txt:
                         tag_lbl = ctk.CTkLabel(cell, text=txt, anchor="center")
-                        tag_lbl.grid(row=1, column=0, sticky="n", pady=(4, 0))
+                        tag_lbl.grid(row=3, column=0, sticky="n", pady=(4, 0))
                         try:
                             tag_lbl.bind("<Button-3>", handler)
                         except Exception:
@@ -1639,12 +1724,48 @@ class App(ctk.CTk):
             frame.grid_columnconfigure(0, weight=0)
             frame.grid_columnconfigure(1, weight=1)
             frame.grid_columnconfigure(2, weight=0)
+            # Let the canvas row expand
+            frame.grid_rowconfigure(1, weight=1)
+        except Exception:
+            pass
+
+        # Header: filename on the left, quick actions on the right
+        try:
+            self._load_gallery_pairs()
+        except Exception:
+            pass
+        name = os.path.basename(path)
+        vpath = None
+        try:
+            vpath = self._gallery_pairs_map.get(name)
+        except Exception:
+            vpath = None
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.grid(row=0, column=0, columnspan=3, sticky="we")
+        try:
+            header.grid_columnconfigure(0, weight=1)
+        except Exception:
+            pass
+        title_lbl = ctk.CTkLabel(header, text=f"{name}  ({w}x{h})", anchor="w")
+        title_lbl.grid(row=0, column=0, sticky="w")
+        hdr_btns = ctk.CTkFrame(header, fg_color="transparent")
+        hdr_btns.grid(row=0, column=1, sticky="e")
+        try:
+            col = 0
+            if vpath and os.path.exists(vpath):
+                ctk.CTkButton(hdr_btns, text="動画を開く", width=96, command=lambda vp=vpath: self._open_video(vp)).grid(row=0, column=col, padx=(0, 6))
+                col += 1
+            ctk.CTkButton(hdr_btns, text="エクスプローラ", width=96, command=lambda p=path: self._gallery_open_in_explorer(p)).grid(row=0, column=col, padx=(0, 6)); col += 1
+            ctk.CTkButton(hdr_btns, text="パスをコピー", width=96, command=lambda p=path: self._gallery_copy_path(p)).grid(row=0, column=col, padx=(0, 6)); col += 1
+            # Save… button defined later; resolved at click time
+            ctk.CTkButton(hdr_btns, text="保存…", width=80, command=lambda: _save_as_only()).grid(row=0, column=col, padx=(0, 6)); col += 1
+            ctk.CTkButton(hdr_btns, text="閉じる", width=70, command=top.destroy).grid(row=0, column=col)
         except Exception:
             pass
 
         # Canvas to display and edit
-        canvas = tk.Canvas(frame, width=vw, height=vh, highlightthickness=0, bd=0)
-        canvas.grid(row=0, column=0, columnspan=3)
+        canvas = tk.Canvas(frame, width=vw, height=vh, highlightthickness=1, highlightbackground="#3b3b3b", bd=0, bg="#111111")
+        canvas.grid(row=1, column=0, columnspan=3, sticky="n")
         _render_to_canvas()
 
         # Editing state
@@ -1783,7 +1904,7 @@ class App(ctk.CTk):
 
         # Editor toolbar
         toolbar = ctk.CTkFrame(frame, fg_color="transparent")
-        toolbar.grid(row=1, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        toolbar.grid(row=2, column=0, columnspan=3, sticky="we", pady=(8, 0))
         def _set_mode_crop():
             mode["value"] = "crop"
         def _set_mode_arrow():
@@ -1858,10 +1979,10 @@ class App(ctk.CTk):
             self._load_gallery_tags()
             cur_tags = self._gallery_tags_map.get(name, [])
 
-            ctk.CTkLabel(frame, text="Tags").grid(row=2, column=0, sticky="e", padx=(0, 8), pady=(10, 0))
+            ctk.CTkLabel(frame, text="Tags").grid(row=3, column=0, sticky="e", padx=(0, 8), pady=(10, 0))
             tag_var = tk.StringVar(value=", ".join(cur_tags))
             tag_entry = ctk.CTkEntry(frame, textvariable=tag_var)
-            tag_entry.grid(row=2, column=1, sticky="we", pady=(10, 0))
+            tag_entry.grid(row=3, column=1, sticky="we", pady=(10, 0))
 
             def _on_tags_typing(event=None, fname=name):
                 # Debounce saves per file
@@ -1896,7 +2017,7 @@ class App(ctk.CTk):
 
             # Suggestions area under the entry
             sugg_frame = ctk.CTkFrame(frame, fg_color="transparent")
-            sugg_frame.grid(row=3, column=0, columnspan=2, sticky="we")
+            sugg_frame.grid(row=4, column=0, columnspan=2, sticky="we")
 
             def _update_suggestions():
                 # Clear previous
@@ -1961,7 +2082,7 @@ class App(ctk.CTk):
             pass
 
         # Keep a reference on the toplevel to avoid GC and set size
-        top.geometry(f"{vw+60}x{vh+180}")
+        top.geometry(f"{vw+64}x{vh+200}")
 
         # Close on ESC
         try:
