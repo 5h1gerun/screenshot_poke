@@ -2,8 +2,13 @@ name: Notify Discord on Release
 
 on:
   release:
-    types: [published, edited, prereleased]
+    types: [published, prereleased, released, edited]
   workflow_dispatch:
+
+# 同一リリースで同時多発を防止（保険）
+concurrency:
+  group: release-${{ github.event.release.id }}
+  cancel-in-progress: true
 
 jobs:
   notify:
@@ -12,7 +17,43 @@ jobs:
       WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
 
     steps:
+      # --- 通知ゲート（ここで「送る/送らない」を判定） ---
+      - name: Decide whether to notify
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$GITHUB_EVENT_PATH"
+          ACTION=$(jq -r '.action' "$E")
+          SKIP=false
+
+          if [ "$ACTION" = "edited" ]; then
+            # name/body が変わっていなければ送らない
+            if ! jq -e '.changes.name // empty | length > 0' "$E" >/dev/null && \
+               ! jq -e '.changes.body // empty | length > 0' "$E" >/dev/null; then
+              echo "Reason: edited but neither name nor body changed" >&2
+              SKIP=true
+            fi
+
+            # 公開直後すぎる編集（90秒以内）は送らない（必要に応じて閾値を変更）
+            PUB=$(jq -r '.release.published_at // .release.created_at // empty' "$E")
+            UPD=$(jq -r '.release.updated_at // empty' "$E")
+            if [ -n "$PUB" ] && [ -n "$UPD" ]; then
+              # Ubuntuランナーは GNU date が使える
+              DIFF=$(( $(date -d "$UPD" +%s) - $(date -d "$PUB" +%s) ))
+              if [ "$DIFF" -lt 90 ]; then
+                echo "Reason: early edited within 90s after publish ($DIFF s)" >&2
+                SKIP=true
+              fi
+            fi
+          fi
+
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+
+      # --- ここから先は gate でスキップされない時だけ実行 ---
       - name: Build fancy embed payload
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
         run: |
           set -euo pipefail
           E="$GITHUB_EVENT_PATH"
@@ -33,16 +74,18 @@ jobs:
           FIRST_ASSET_URL=$(jq -r '.release.assets[0]?.browser_download_url // ""' "$E")
 
           case "$ACTION" in
-            published)   COLOR=3066993 ;;
-            edited)      COLOR=15844367 ;;
-            prereleased) COLOR=10181046 ;;
-            *)           COLOR=5814783 ;;
+            published)   COLOR=3066993 ;;   # green
+            edited)      COLOR=15844367 ;;  # orange
+            prereleased) COLOR=10181046 ;;  # purple
+            released)    COLOR=3447003 ;;   # blue (昇格)
+            *)           COLOR=5814783 ;;   # gray
           esac
 
           PREFIX="ℹ️ リリース"
           [ "$ACTION" = "published" ]   && PREFIX="🚀 公開"
           [ "$ACTION" = "edited" ]      && PREFIX="✏️ 更新"
           [ "$ACTION" = "prereleased" ] && PREFIX="🧪 プレリリース"
+          [ "$ACTION" = "released" ]    && PREFIX="✅ 正式リリース"
           TITLE="$PREFIX: ${NAME:-$TAG}"
 
           EMBED=$(jq -nc \
@@ -90,6 +133,8 @@ jobs:
           printf '%s\n' "$EMBED" > payload.json
 
       - name: Send to Discord
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
         run: |
           set -euo pipefail
           curl -sS -H "Content-Type: application/json; charset=utf-8" \
