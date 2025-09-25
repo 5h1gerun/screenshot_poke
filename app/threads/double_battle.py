@@ -117,8 +117,8 @@ class DoubleBattleThread(threading.Thread):
             # Keep recent crop for broadcasting
             cv2.imwrite(self._haisinyou_path, crop)
 
-            # Save timestamped copy
-            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Save timestamped copy (match OBS naming: CCYY-MM-DD_hh-mm-ss)
+            ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             ext = paths_utils.get_output_format_ext()
             dst = os.path.join(self._koutiku, f"{ts}.{ext}")
             cv2.imwrite(dst, crop)
