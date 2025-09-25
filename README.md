@@ -1,4 +1,4 @@
-# OBS Screenshot Tool（スクリーンショット支援ツール）
+# OBS Screenshot Tool
 
 CustomTkinter ベースの GUI アプリケーションです。OBS WebSocket と連携し、シーンやテンプレート画像の組み合わせ、テキスト更新、配信用画像の生成を行います。エントリーポイントは `combined_app.py` です。
 
