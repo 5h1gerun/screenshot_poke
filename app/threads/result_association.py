@@ -4,7 +4,8 @@ import os
 import threading
 import time
 from collections import deque
-from typing import Deque, Dict, Optional
+from typing import Deque, Dict, Optional, Tuple
+import os
 
 from app.utils.logging import UiLogger
 from app.utils import paths as paths_utils
@@ -43,12 +44,20 @@ class ResultAssociationThread(threading.Thread):
         self._stop = threading.Event()
         self._rq = result_queue
         self._seen: set[str] = set()
-        self._pending_images: Deque[str] = deque()
+        # (path, timestamp)
+        self._pending_images: Deque[Tuple[str, float]] = deque()
+        # result dicts: {"timestamp": float, "result": str, ...}
         self._pending_results: Deque[Dict[str, object]] = deque()
+        # stop markers (timestamps) from recording stop events
+        self._pending_stops: Deque[float] = deque()
         self._default_win_timeout = float(default_win_timeout or 0)
         self._first_unpaired_ts: Optional[float] = None
         self._obs = obs
         self._text_source = text_source
+        try:
+            self._tol = float(os.getenv("ASSOC_TIME_TOLERANCE_SEC", "20") or 20)
+        except Exception:
+            self._tol = 20.0
         # Normalize season for tagging and CSV:
         # - If only digits like "13", convert to "S13"
         # - Else keep as-is
@@ -92,8 +101,13 @@ class ResultAssociationThread(threading.Thread):
                             continue
                     except Exception:
                         continue
+                    # Determine image timestamp (prefer mtime)
+                    try:
+                        ts = os.path.getmtime(p)
+                    except Exception:
+                        ts = time.time()
                     self._seen.add(p)
-                    self._pending_images.append(p)
+                    self._pending_images.append((p, ts))
                     if self._first_unpaired_ts is None:
                         self._first_unpaired_ts = time.time()
                     self._log.log(f"[結果連携] 新規画像: {os.path.basename(p)}")
@@ -104,8 +118,14 @@ class ResultAssociationThread(threading.Thread):
             try:
                 while True:
                     item = self._rq.get_nowait()
-                    if isinstance(item, dict) and "result" in item:
-                        self._pending_results.append(item)
+                    if isinstance(item, dict):
+                        ts = float(item.get("timestamp") or time.time())
+                        if "result" in item:
+                            self._pending_results.append(item)
+                        elif str(item.get("type", "")).lower() == "stop":
+                            self._pending_stops.append(ts)
+                        else:
+                            self._log.log("[結果連携] 未知の結果オブジェクトを受信")
                     else:
                         self._log.log("[結果連携] 未知の結果オブジェクトを受信")
             except Exception:
@@ -134,19 +154,51 @@ class ResultAssociationThread(threading.Thread):
 
     # --- internals ---
     def _pair_items(self) -> None:
-        while self._pending_images and self._pending_results:
-            img = self._pending_images.popleft()
-            res = self._pending_results.popleft()
-            try:
-                result = str(res.get("result"))
-            except Exception:
-                result = "win"
-            ts = float(res.get("timestamp") or time.time())
-            name = os.path.basename(img)
+        def _pop_best_result_for(ts_img: float) -> Optional[Dict[str, object]]:
+            if not self._pending_results:
+                return None
+            # Choose result with smallest |ts - ts_img| if within tolerance
+            idx_best = -1
+            best_delta = 1e9
+            for i, r in enumerate(self._pending_results):
+                try:
+                    tr = float(r.get("timestamp") or 0)
+                except Exception:
+                    continue
+                d = abs(tr - ts_img)
+                if d < best_delta:
+                    best_delta = d
+                    idx_best = i
+            if idx_best >= 0 and best_delta <= self._tol:
+                _lst = list(self._pending_results)
+                item = _lst.pop(idx_best)
+                self._pending_results = deque(_lst)
+                return item
+            return None
 
+        def _pop_stop_for(ts_img: float) -> Optional[float]:
+            # Choose a stop marker within tolerance closest to image ts
+            if not self._pending_stops:
+                return None
+            idx_best = -1
+            best_delta = 1e9
+            for i, t in enumerate(self._pending_stops):
+                d = abs(t - ts_img)
+                if d < best_delta:
+                    best_delta = d
+                    idx_best = i
+            if idx_best >= 0 and best_delta <= self._tol:
+                t = self._pending_stops[idx_best]
+                # remove by index
+                self._pending_stops = deque([v for j, v in enumerate(self._pending_stops) if j != idx_best])
+                return t
+            return None
+
+        def _apply_pair(img_path: str, result: str, ts_res: float, synthetic: bool = False) -> None:
+            name = os.path.basename(img_path)
             # Append to CSV and tag file
             try:
-                stats_utils.append_result(self._base, name, result, ts, season=self._season)
+                stats_utils.append_result(self._base, name, result, ts_res, season=self._season)
             except Exception as e:
                 self._log.log(f"[結果連携] CSV 追記失敗: {e}")
             try:
@@ -158,18 +210,40 @@ class ResultAssociationThread(threading.Thread):
                 self._log.log(f"[結果連携] タグ付け失敗: {e}")
             self._log.log(f"[結果連携] {name} -> {result}")
 
-            # If this was a synthetic assignment (fallback), update OBS text source
-            try:
-                if bool(res.get("synthetic")) and self._obs is not None:
+            # If this was synthetic, update OBS text source counters from totals
+            if synthetic and self._obs is not None:
+                try:
                     rows = stats_utils.load_results(self._base)
                     win, lose, dc, _wr = stats_utils.compute_totals(rows)
                     text = f"Win: {win} - Lose: {lose} - DC: {dc}"
-                    try:
-                        self._obs.update_text_source(self._text_source, text)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    self._obs.update_text_source(self._text_source, text)
+                except Exception:
+                    pass
+
+        # Main pairing loop
+        while self._pending_images:
+            img_path, ts_img = self._pending_images[0]
+            res = _pop_best_result_for(ts_img)
+            if res is not None:
+                # Consume image
+                self._pending_images.popleft()
+                rname = str(res.get("result") or "win")
+                ts_res = float(res.get("timestamp") or ts_img)
+                synthetic = bool(res.get("synthetic"))
+                _apply_pair(img_path, rname, ts_res, synthetic=synthetic)
+                # Drop any stop markers extremely close to this image to prevent double pairing
+                _ = _pop_stop_for(ts_img)
+                continue
+
+            # No explicit result within tolerance; try stop marker -> default to win
+            t_stop = _pop_stop_for(ts_img)
+            if t_stop is not None:
+                self._pending_images.popleft()
+                _apply_pair(img_path, "win", t_stop, synthetic=True)
+                continue
+
+            # Cannot pair (yet); wait for more results/stops
+            break
 
         if not self._pending_images:
             self._first_unpaired_ts = None

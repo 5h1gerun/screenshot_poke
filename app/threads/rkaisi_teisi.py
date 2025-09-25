@@ -4,6 +4,7 @@ import os
 import threading
 import time
 from typing import Optional, Tuple
+import queue
 
 import cv2
 
@@ -21,7 +22,7 @@ class RkaisiTeisiThread(threading.Thread):
 
     MATCH_THRESHOLD = 0.4
 
-    def __init__(self, obs: ObsClient, base_dir: str, logger: Optional[UiLogger] = None, source_name: str = "Capture1") -> None:
+    def __init__(self, obs: ObsClient, base_dir: str, logger: Optional[UiLogger] = None, source_name: str = "Capture1", result_queue: Optional["queue.Queue"] = None) -> None:
         super().__init__(daemon=True)
         self._obs = obs
         self._base = base_dir
@@ -30,6 +31,8 @@ class RkaisiTeisiThread(threading.Thread):
         self._recording = False
         self._rec_start_ts: Optional[float] = None
         self._source = source_name
+        # Optional: publish stop marker for default-win logic
+        self._rq = result_queue
 
         # Paths
         self._scene_path = os.path.join(self._base, "scene2.png")
@@ -93,24 +96,79 @@ class RkaisiTeisiThread(threading.Thread):
 
         if (not self._recording) and match_template(masu1_crop_img, masu_tpl, self.MATCH_THRESHOLD, grayscale=False):
             self._log.log("[録開始/停止] 'masu1' 検出 → 録画開始")
-            self._obs.start_recording()
-            self._recording = True
-            self._rec_start_ts = time.time()
-            if self._stop.wait(140):
+            started = False
+            try:
+                self._obs.start_recording()
+                # Verify it actually started (poll briefly)
+                for _ in range(10):
+                    st = self._obs.is_recording()
+                    if st is True:
+                        started = True
+                        break
+                    time.sleep(0.2)
+                # One retry if not started
+                if not started:
+                    self._obs.start_recording()
+                    for _ in range(10):
+                        st = self._obs.is_recording()
+                        if st is True:
+                            started = True
+                            break
+                        time.sleep(0.2)
+            except Exception as e:
+                self._log.log(f"[録開始/停止] 録画開始に失敗: {e}")
+                started = False
+
+            if started:
+                self._recording = True
+                self._rec_start_ts = time.time()
+                if self._stop.wait(140):
+                    return
                 return
-            return
+            else:
+                self._log.log("[録開始/停止] 録画が開始されませんでした")
+                if self._stop.wait(1):
+                    return
+                return
 
         if self._recording and match_template(mark_crop_img, mark_tpl, self.MATCH_THRESHOLD, grayscale=False):
             self._log.log("[録開始/停止] 'mark' 検出 → 録画停止")
-            self._obs.stop_recording()
-            self._recording = False
+            # Emit a stop marker for association/default-win logic
             try:
-                if self._rec_start_ts is not None:
-                    root_base = os.path.dirname(self._base)
-                    pairs_utils.associate_recording_window(root_base, self._rec_start_ts, time.time())
+                if self._rq is not None:
+                    self._rq.put({"timestamp": time.time(), "type": "stop"}, timeout=0.05)
             except Exception:
                 pass
-            self._rec_start_ts = None
+            stopped = False
+            try:
+                self._obs.stop_recording()
+                for _ in range(10):
+                    st = self._obs.is_recording()
+                    if st is False:
+                        stopped = True
+                        break
+                    time.sleep(0.2)
+                if not stopped:
+                    self._obs.stop_recording()
+                    for _ in range(10):
+                        st = self._obs.is_recording()
+                        if st is False:
+                            stopped = True
+                            break
+                        time.sleep(0.2)
+            except Exception as e:
+                self._log.log(f"[録開始/停止] 録画停止に失敗: {e}")
+                stopped = False
+            finally:
+                # Proceed with bookkeeping regardless; we'll best-effort associate
+                try:
+                    if self._rec_start_ts is not None:
+                        root_base = os.path.dirname(self._base)
+                        pairs_utils.associate_recording_window(root_base, self._rec_start_ts, time.time())
+                except Exception:
+                    pass
+                self._rec_start_ts = None
+                self._recording = False if stopped else self._recording
             if self._stop.wait(0.5):
                 return
 

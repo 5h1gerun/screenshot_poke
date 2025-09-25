@@ -796,13 +796,15 @@ class App(ctk.CTk):
                 capture_interval_sec=max(0.0, _dbl_ms / 1000.0),
             )
             self._th_double.start()
+        # Result association queue shared between Syouhai and association thread
+        # Create upfront so multiple producers (Syouhai, RkaisiTeisi) can push events
+        self._results_queue = queue.Queue()
+
         if self.chk_rkaisi_var.get():
             handantmp = os.path.join(base_dir, "handantmp")
             os.makedirs(handantmp, exist_ok=True)
-            self._th_rkaisi = RkaisiTeisiThread(self._obs, handantmp, logger, source_name=src)
+            self._th_rkaisi = RkaisiTeisiThread(self._obs, handantmp, logger, source_name=src, result_queue=self._results_queue)
             self._th_rkaisi.start()
-        # Result association queue shared between Syouhai and association thread
-        self._results_queue = queue.Queue()
         if self.chk_syouhai_var.get():
             self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger, source_name=src, result_queue=self._results_queue)
             self._th_syouhai.start()
@@ -1328,6 +1330,228 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+        # Ensure mouse wheel scroll works even when hovering child widgets
+        self._install_gallery_wheel_handler()
+        # Make scrollbar slimmer for better aesthetics
+        try:
+            self._tune_gallery_scrollbar()
+        except Exception:
+            pass
+
+    def _install_gallery_wheel_handler(self) -> None:
+        # Bind a global mouse-wheel handler which only acts when the pointer
+        # is over the Gallery tab/scroll area. This improves scrolling
+        # reliability on Windows/Mac/Linux and for nested widgets.
+        def _gallery_canvas_global():
+            # Best-effort to find CTkScrollableFrame's canvas
+            try:
+                for attr in ("_parent_canvas", "_canvas", "canvas"):
+                    c = getattr(self._gallery_scroll, attr, None)
+                    if c is not None:
+                        return c
+            except Exception:
+                pass
+            try:
+                import tkinter as _tk
+                for child in self._gallery_scroll.winfo_children():
+                    if isinstance(child, _tk.Canvas):
+                        return child
+            except Exception:
+                pass
+            return None
+        def _is_over_gallery(x: int, y: int) -> bool:
+            try:
+                w = self.winfo_containing(x, y)
+                if w is None:
+                    return False
+                # Walk up parents to see if we are inside the gallery scroll frame
+                cur = w
+                target = getattr(self, "_gallery_scroll", None)
+                while cur is not None:
+                    if cur is target:
+                        return True
+                    cur = getattr(cur, "master", None)
+            except Exception:
+                pass
+            return False
+
+        def _on_wheel(event):
+            try:
+                x = self.winfo_pointerx() - self.winfo_rootx()
+                y = self.winfo_pointery() - self.winfo_rooty()
+                if not _is_over_gallery(x, y):
+                    return
+                cv = _gallery_canvas_global()
+                if cv is None:
+                    return
+                # Compute direction/amount; platform differences handled here
+                if getattr(event, "num", None) in (4, 5):
+                    # Linux button events: one step per click
+                    steps = -1 if event.num == 4 else 1
+                else:
+                    d = int(getattr(event, "delta", 0) or 0)
+                    if sys.platform == "darwin":
+                        # macOS: delta is small but signed; use one step per event
+                        steps = -1 if d > 0 else 1
+                    else:
+                        # Windows: accumulate to 120 units per notch, support high-precision trackpads
+                        try:
+                            self._gallery_wheel_accum
+                        except AttributeError:
+                            self._gallery_wheel_accum = 0
+                        self._gallery_wheel_accum += d
+                        quanta = 120
+                        steps = 0
+                        if abs(self._gallery_wheel_accum) >= quanta:
+                            steps = -int(self._gallery_wheel_accum / quanta)
+                            self._gallery_wheel_accum -= -steps * quanta
+                if steps:
+                    # Acceleration with modifier keys (Shift x2, Ctrl x3)
+                    accel = 1
+                    try:
+                        st = int(getattr(event, "state", 0) or 0)
+                        if st & 0x0001:
+                            accel *= 2
+                        if st & 0x0004:
+                            accel *= 3
+                    except Exception:
+                        pass
+
+                    # Allow unit-based override via env
+                    try:
+                        import os as _os
+                        lines = int((_os.getenv("GALLERY_SCROLL_LINES", "0") or 0))
+                    except Exception:
+                        lines = 0
+
+                    if lines > 0:
+                        move = steps * max(1, lines) * max(1, accel)
+                        try:
+                            cv.yview_scroll(move, "units")
+                        except Exception:
+                            pass
+                    else:
+                        # Fraction-based scrolling; default auto by rows
+                        try:
+                            import os as _os
+                            fenv = (_os.getenv("GALLERY_SCROLL_FRACTION", "auto") or "auto").strip().lower()
+                        except Exception:
+                            fenv = "auto"
+                        if fenv and fenv != "auto":
+                            try:
+                                frac = float(fenv)
+                            except Exception:
+                                frac = 0.08
+                        else:
+                            # Auto: one row per step scaled by optional multiplier
+                            try:
+                                rows = int(getattr(self, "_gallery_rows_count", 0) or 0)
+                            except Exception:
+                                rows = 0
+                            try:
+                                import os as _os
+                                mult = float((_os.getenv("GALLERY_ROW_STEP_MULT", "1.0") or 1.0))
+                            except Exception:
+                                mult = 1.0
+                            if rows > 0:
+                                frac = max(0.005, min(0.5, (1.0 / float(rows)) * mult))
+                            else:
+                                frac = 0.08
+                        try:
+                            y0, y1 = cv.yview()
+                        except Exception:
+                            y0, y1 = 0.0, 1.0
+                        df = steps * frac * max(1, accel)
+                        new_y = min(1.0, max(0.0, y0 + df))
+                        try:
+                            cv.yview_moveto(new_y)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        try:
+            # Add global bindings (add="+") so we don't override others
+            self.bind_all("<MouseWheel>", _on_wheel, add="+")         # Windows/macOS
+            self.bind_all("<Button-4>", _on_wheel, add="+")           # Linux scroll up
+            self.bind_all("<Button-5>", _on_wheel, add="+")           # Linux scroll down
+        except Exception:
+            pass
+
+    def _refresh_gallery_scrollregion(self) -> None:
+        # Force-update the canvas scrollregion to include all content
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            # Attempt to find the underlying canvas used by CTkScrollableFrame
+            cv = None
+            for attr in ("_parent_canvas", "_canvas", "canvas"):
+                cv = getattr(self._gallery_scroll, attr, None)
+                if cv is not None:
+                    break
+            if cv is None:
+                import tkinter as _tk
+                for child in self._gallery_scroll.winfo_children():
+                    if isinstance(child, _tk.Canvas):
+                        cv = child
+                        break
+            if cv is not None:
+                try:
+                    # Prefer inner container request size if available
+                    _container = getattr(self._gallery_scroll, "_scrollable_frame", None) or getattr(self._gallery_scroll, "scrollable_frame", None)
+                    if _container is not None:
+                        self.update_idletasks()
+                        w = max(cv.winfo_width(), _container.winfo_reqwidth())
+                        h = _container.winfo_reqheight()
+                        cv.configure(scrollregion=(0, 0, w, h))
+                    else:
+                        region = cv.bbox("all")
+                        if region is not None:
+                            cv.configure(scrollregion=region)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _tune_gallery_scrollbar(self) -> None:
+        # Try to reduce the scrollbar thickness (width)
+        try:
+            import os as _os
+            w = int((_os.getenv("GALLERY_SCROLLBAR_WIDTH", "14") or 14))
+        except Exception:
+            w = 14
+        targets = []
+        try:
+            for attr in ("_scrollbar", "scrollbar", "_vertical_scrollbar", "_v_scrollbar"):
+                sb = getattr(self._gallery_scroll, attr, None)
+                if sb is not None:
+                    targets.append(sb)
+        except Exception:
+            pass
+        try:
+            for ch in self._gallery_scroll.winfo_children():
+                try:
+                    import customtkinter as _ctk
+                    if isinstance(ch, _ctk.CTkScrollbar):
+                        targets.append(ch)
+                except Exception:
+                    # Fallback: best-effort by class name
+                    if ch.__class__.__name__.lower().endswith("scrollbar"):
+                        targets.append(ch)
+        except Exception:
+            pass
+        seen = set()
+        for sb in targets:
+            try:
+                if id(sb) in seen:
+                    continue
+                seen.add(id(sb))
+                sb.configure(width=w)
+            except Exception:
+                pass
+
     def _on_gallery_configure(self, event=None):
         # Only react while Gallery tab is active
         try:
@@ -1386,9 +1610,10 @@ class App(ctk.CTk):
         koutiku = self._current_koutiku_path()
         os.makedirs(koutiku, exist_ok=True)
 
-        # Clear previous thumbnails
+        # Clear previous thumbnails (inner container of scrollable frame)
         try:
-            for child in self._gallery_scroll.winfo_children():
+            _container = getattr(self._gallery_scroll, "_scrollable_frame", None) or getattr(self._gallery_scroll, "scrollable_frame", None) or self._gallery_scroll
+            for child in _container.winfo_children():
                 child.destroy()
         except Exception:
             pass
@@ -1487,8 +1712,15 @@ class App(ctk.CTk):
 
         # Sort by mtime (desc) using prefetched metadata
         items.sort(key=lambda x: x[1], reverse=True)
-        max_items = int(os.getenv("GALLERY_MAX", "100") or 100)
-        items = items[:max_items]
+        # Default: no upper limit. If GALLERY_MAX is set to a positive integer,
+        # limit to that many newest items. "0" or empty means unlimited.
+        try:
+            _env_max = (os.getenv("GALLERY_MAX", "") or "").strip()
+            _limit = int(_env_max) if _env_max else 0
+        except Exception:
+            _limit = 0
+        if _limit > 0:
+            items = items[:_limit]
         files = [p for (p, _mt) in items]
 
         # Layout config (dynamic)
@@ -1507,13 +1739,18 @@ class App(ctk.CTk):
         except Exception:
             pass
         try:
-            cols = max(1, min(8, int(max(thumb_w + 2 * pad, cw) // (thumb_w + 2 * pad))))
+            max_cols = int(os.getenv("GALLERY_MAX_COLS", "4") or 4)
         except Exception:
-            cols = 2
-        # Reconfigure grid columns
+            max_cols = 4
         try:
+            cols = max(1, min(max_cols, int(max(thumb_w + 2 * pad, cw) // (thumb_w + 2 * pad))))
+        except Exception:
+            cols = min(2, max_cols)
+        # Reconfigure grid columns on inner container so layout expands
+        try:
+            _container = getattr(self._gallery_scroll, "_scrollable_frame", None) or getattr(self._gallery_scroll, "scrollable_frame", None) or self._gallery_scroll
             for i in range(cols):
-                self._gallery_scroll.grid_columnconfigure(i, weight=1)
+                _container.grid_columnconfigure(i, weight=1)
         except Exception:
             pass
 
@@ -1562,16 +1799,22 @@ class App(ctk.CTk):
                 self._thumb_refs.append(tk_img)
                 # Ensure image is never cropped by the button height
                 btn.configure(image=tk_img, text="", width=tw, height=th + 2)
+                try:
+                    # Thumbnails can change the layout height; refresh scrollregion
+                    self._refresh_gallery_scrollregion()
+                except Exception:
+                    pass
             except Exception:
                 pass
 
         row = 0
         col = 0
         current_token = self._gallery_load_token
+        _container = getattr(self._gallery_scroll, "_scrollable_frame", None) or getattr(self._gallery_scroll, "scrollable_frame", None) or self._gallery_scroll
         for path in files:
             try:
                 # Cell frame per item (button + tags label)
-                cell = ctk.CTkFrame(self._gallery_scroll, fg_color="transparent")
+                cell = ctk.CTkFrame(_container, fg_color="transparent")
                 cell.grid(row=row, column=col, padx=pad, pady=pad, sticky="n")
                 try:
                     cell.grid_columnconfigure(0, weight=1)
@@ -1622,16 +1865,20 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
-                # Show video open button if paired
+                # Always render a "動画を見る" button; enable only when paired
                 try:
                     vpath = self._gallery_pairs_map.get(fname)
-                    if vpath and os.path.exists(vpath):
-                        vbtn = ctk.CTkButton(cell, text="動画を開く", width=120, command=lambda vp=vpath: self._open_video(vp))
-                        vbtn.grid(row=2, column=0, pady=(4, 0))
-                        try:
-                            vbtn.bind("<Button-3>", handler)
-                        except Exception:
-                            pass
+                    vbtn = ctk.CTkButton(cell, text="動画を見る", width=120)
+                    vbtn.grid(row=2, column=0, pady=(4, 0))
+                    try:
+                        vbtn.bind("<Button-3>", handler)
+                    except Exception:
+                        pass
+                    if vpath:
+                        # If we have a mapping, make it clickable; existence check is best-effort
+                        vbtn.configure(state="normal", command=lambda vp=vpath: self._open_video(vp))
+                    else:
+                        vbtn.configure(state="disabled")
                 except Exception:
                     pass
 
@@ -1656,6 +1903,25 @@ class App(ctk.CTk):
                     row += 1
             except Exception:
                 continue
+
+        # After populating, ensure scrollbar covers full content
+        try:
+            self._refresh_gallery_scrollregion()
+        except Exception:
+            pass
+        # Store gallery layout metrics for dynamic scrolling
+        try:
+            self._gallery_cols_count = max(1, int(cols))
+            # Number of populated rows (add 1 if there is a partial row)
+            total_rows = int(row) + (1 if col > 0 else 0)
+            self._gallery_rows_count = max(1, total_rows)
+        except Exception:
+            pass
+        # Re-apply scrollbar width tuning after layout
+        try:
+            self._tune_gallery_scrollbar()
+        except Exception:
+            pass
 
     def _open_image_viewer(self, path: str) -> None:
         try:
@@ -1682,8 +1948,9 @@ class App(ctk.CTk):
             sh = self.winfo_screenheight()
         except Exception:
             sw, sh = 1600, 900
-        max_w = min(1200, int(sw * 0.9))
-        max_h = min(900, int(sh * 0.9))
+        # Show the image slightly larger than before
+        max_w = min(1400, int(sw * 0.96))
+        max_h = min(1000, int(sh * 0.96))
 
         w, h = img.size
         scale = min(max_w / float(w), max_h / float(h), 1.0)
@@ -1752,9 +2019,13 @@ class App(ctk.CTk):
         hdr_btns.grid(row=0, column=1, sticky="e")
         try:
             col = 0
-            if vpath and os.path.exists(vpath):
-                ctk.CTkButton(hdr_btns, text="動画を開く", width=96, command=lambda vp=vpath: self._open_video(vp)).grid(row=0, column=col, padx=(0, 6))
-                col += 1
+            vbtn_hdr = ctk.CTkButton(hdr_btns, text="動画を見る", width=96)
+            vbtn_hdr.grid(row=0, column=col, padx=(0, 6))
+            if vpath:
+                vbtn_hdr.configure(state="normal", command=lambda vp=vpath: self._open_video(vp))
+            else:
+                vbtn_hdr.configure(state="disabled")
+            col += 1
             ctk.CTkButton(hdr_btns, text="エクスプローラ", width=96, command=lambda p=path: self._gallery_open_in_explorer(p)).grid(row=0, column=col, padx=(0, 6)); col += 1
             ctk.CTkButton(hdr_btns, text="パスをコピー", width=96, command=lambda p=path: self._gallery_copy_path(p)).grid(row=0, column=col, padx=(0, 6)); col += 1
             # Save… button defined later; resolved at click time

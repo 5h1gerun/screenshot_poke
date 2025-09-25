@@ -109,7 +109,7 @@ def find_recording_file(
     start: float,
     end: float,
     exts: Tuple[str, ...] = (".mkv", ".mp4", ".mov", ".flv"),
-    margin_sec: float = 15.0,
+    margin_sec: float = 20.0,
 ) -> Optional[str]:
     """Find the recording file likely created for a session [start, end].
 
@@ -118,6 +118,13 @@ def find_recording_file(
     """
     if not recordings_dir or not os.path.isdir(recordings_dir):
         return None
+    # Allow override via env var RECORDINGS_MATCH_MARGIN_SEC (seconds)
+    try:
+        import os as _os
+        _m = float((_os.getenv("RECORDINGS_MATCH_MARGIN_SEC", str(margin_sec)) or margin_sec))
+        margin_sec = _m
+    except Exception:
+        pass
     candidates: List[Tuple[str, float]] = []  # (path, mtime)
     lo = start - max(0.0, margin_sec)
     hi = end + max(0.0, margin_sec)
