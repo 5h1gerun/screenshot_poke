@@ -19,19 +19,30 @@ if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
   throw "Python launcher 'py' not found. Install Python 3." 
 }
 
+# Ensure dependencies are installed for correct collection
+Write-Host "Installing Python dependencies (requirements.txt)"
+py -3 -m pip install -r requirements.txt --disable-pip-version-check | Out-Null
 py -3 -m pip install --upgrade pyinstaller | Out-Null
 if ($OneFile) {
   Write-Host "Building single-file EXE (--onefile)"
   $adds = @()
   if (Test-Path native\build\thumbnail_wic.dll) { $adds += "--add-binary"; $adds += "native/build/thumbnail_wic.dll;native" }
   if (Test-Path native\build\image_viewer_d2d.exe) { $adds += "--add-binary"; $adds += "native/build/image_viewer_d2d.exe;native" }
-  py -3 -m PyInstaller --noconsole --name OBS-Screenshot-Tool --onefile @adds combined_app.py
+  py -3 -m PyInstaller --noconfirm --clean --noconsole --name OBS-Screenshot-Tool --onefile @adds `
+    --hidden-import customtkinter --hidden-import PIL._tkinter_finder `
+    combined_app.py
 } else {
-  py -3 -m PyInstaller packaging/obs_screenshot_tool.spec
+  py -3 -m PyInstaller --noconfirm --clean packaging/obs_screenshot_tool.spec
 }
 
 if ($OneFile) {
   Write-Host "Artifacts: dist/OBS-Screenshot-Tool.exe"
+  # Place .env template next to the EXE (if not exists)
+  $envT = Join-Path packaging ".env.template"
+  $outEnv = Join-Path dist ".env"
+  if (Test-Path $envT -PathType Leaf -and -not (Test-Path $outEnv -PathType Leaf)) {
+    Copy-Item $envT $outEnv -Force
+  }
 } else {
   Write-Host "Artifacts: dist/OBS-Screenshot-Tool"
 }
