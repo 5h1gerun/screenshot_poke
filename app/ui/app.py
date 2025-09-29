@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import re
 import sys
 import threading
@@ -30,6 +31,12 @@ from app.utils.logging import UiLogger
 from app.version import VERSION as APP_VERSION
 from app.utils import stats as stats_utils
 from app.utils import paths as paths_utils
+try:
+    from app.utils.native_thumb import generate_thumbnail_native as _gen_thumb_native, NATIVE_AVAILABLE as _NATIVE_THUMB
+except Exception:
+    def _gen_thumb_native(*_args, **_kwargs):
+        return False
+    _NATIVE_THUMB = False
 
 
 class App(ctk.CTk):
@@ -102,6 +109,12 @@ class App(ctk.CTk):
         self._gallery_placeholder_img: Optional[ctk.CTkImage] = None
         self._gallery_last_width: int = 0
         self._gallery_resize_after_id: Optional[str] = None
+        # Chunked render + scrollregion throttle
+        self._gallery_chunk_after_id: Optional[str] = None
+        self._gallery_load_files: list[str] = []
+        self._gallery_load_cols: int = 1
+        self._scrollregion_after_id: Optional[str] = None
+        self._scrollregion_pending: bool = False
 
         self._build_ui()
         # Graceful shutdown on window close
@@ -583,6 +596,27 @@ class App(ctk.CTk):
                 except Exception:
                     pass
                 self._gallery_resize_after_id = None
+        except Exception:
+            pass
+        # Cancel chunked render timer
+        try:
+            if getattr(self, "_gallery_chunk_after_id", None):
+                try:
+                    self.after_cancel(self._gallery_chunk_after_id)
+                except Exception:
+                    pass
+                self._gallery_chunk_after_id = None
+        except Exception:
+            pass
+        # Cancel scrollregion throttle timer
+        try:
+            if getattr(self, "_scrollregion_after_id", None):
+                try:
+                    self.after_cancel(self._scrollregion_after_id)
+                except Exception:
+                    pass
+                self._scrollregion_after_id = None
+                self._scrollregion_pending = False
         except Exception:
             pass
         # Shutdown thumbnail executor
@@ -1515,6 +1549,24 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _request_gallery_scrollregion_refresh(self, delay_ms: int = 50) -> None:
+        try:
+            if self._scrollregion_pending and self._scrollregion_after_id is not None:
+                return
+            self._scrollregion_pending = True
+            def _do():
+                try:
+                    self._refresh_gallery_scrollregion()
+                finally:
+                    self._scrollregion_pending = False
+                    self._scrollregion_after_id = None
+            self._scrollregion_after_id = self.after(max(0, int(delay_ms)), _do)
+        except Exception:
+            try:
+                self._refresh_gallery_scrollregion()
+            except Exception:
+                pass
+
     def _tune_gallery_scrollbar(self) -> None:
         # Try to reduce the scrollbar thickness (width)
         try:
@@ -1768,9 +1820,49 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-        def _load_thumb_pil(path: str, max_w: int):
-            # Load and resize in worker thread; return PIL image and size
+        # Thumbnail cache directory
+        thumb_dir = os.path.join(koutiku, "_thumbs")
+        try:
+            os.makedirs(thumb_dir, exist_ok=True)
+        except Exception:
+            pass
+
+        def _thumb_cache_path(src_path: str, max_w: int) -> str:
             try:
+                mt = int(os.path.getmtime(src_path))
+            except Exception:
+                mt = 0
+            try:
+                h = hashlib.sha1((src_path + "|" + str(mt) + "|" + str(int(max_w))).encode("utf-8", errors="ignore")).hexdigest()
+            except Exception:
+                h = os.path.basename(src_path)
+            # Default to JPEG for size/speed; PNG if env forces
+            ext = ".jpg"
+            try:
+                if (os.getenv("GALLERY_THUMB_FMT", "jpg") or "jpg").strip().lower() == "png":
+                    ext = ".png"
+            except Exception:
+                pass
+            return os.path.join(thumb_dir, f"{h}{ext}")
+
+        def _load_thumb_pil(path: str, max_w: int):
+            # Load thumbnail from cache or generate via native DLL or PIL.
+            try:
+                cache_path = _thumb_cache_path(path, max_w)
+                # 1) If cache exists, load and return
+                if os.path.exists(cache_path):
+                    with Image.open(cache_path) as imc:
+                        tw, th = imc.size
+                        return (imc.copy(), tw, th)
+                # 2) Try native generator if enabled
+                use_native_env = (os.getenv("USE_NATIVE_THUMB", "1") or "1").strip().lower()
+                use_native = _NATIVE_THUMB and use_native_env not in ("0", "false", "no")
+                if use_native:
+                    if _gen_thumb_native(path, cache_path, int(max_w)) and os.path.exists(cache_path):
+                        with Image.open(cache_path) as imn:
+                            tw, th = imn.size
+                            return (imn.copy(), tw, th)
+                # 3) Fallback: PIL resize from source
                 with Image.open(path) as im:
                     w, h = im.size
                     if w <= 0 or h <= 0:
@@ -1779,8 +1871,18 @@ class App(ctk.CTk):
                     tw = max(1, int(w * scale))
                     th = max(1, int(h * scale))
                     # Faster downscale for thumbnails
-                    thumb = im.copy()
-                    thumb = thumb.resize((tw, th), Image.BILINEAR)
+                    thumb = im.copy().resize((tw, th), Image.BILINEAR)
+                    # Optionally write to cache to speed next time
+                    try:
+                        cache_on = (os.getenv("CACHE_THUMBS", "1") or "1").strip().lower() not in ("0", "false", "no")
+                    except Exception:
+                        cache_on = True
+                    if cache_on:
+                        try:
+                            fmt = ("JPEG" if cache_path.lower().endswith(".jpg") or cache_path.lower().endswith(".jpeg") else "PNG")
+                            thumb.save(cache_path, format=fmt, quality=85 if fmt == "JPEG" else None)
+                        except Exception:
+                            pass
                     return (thumb, tw, th)
             except Exception:
                 return None
@@ -1800,28 +1902,55 @@ class App(ctk.CTk):
                 # Ensure image is never cropped by the button height
                 btn.configure(image=tk_img, text="", width=tw, height=th + 2)
                 try:
-                    # Thumbnails can change the layout height; refresh scrollregion
-                    self._refresh_gallery_scrollregion()
+                    # Thumbnails can change the layout height; throttle scrollregion refresh
+                    self._request_gallery_scrollregion_refresh(60)
                 except Exception:
                     pass
             except Exception:
                 pass
 
-        row = 0
-        col = 0
+        # Chunked rendering of grid
         current_token = self._gallery_load_token
         _container = getattr(self._gallery_scroll, "_scrollable_frame", None) or getattr(self._gallery_scroll, "scrollable_frame", None) or self._gallery_scroll
-        for path in files:
+        self._gallery_load_files = list(files)
+        self._gallery_load_cols = max(1, int(cols))
+
+        try:
+            from math import ceil as _ceil
+            self._gallery_cols_count = self._gallery_load_cols
+            self._gallery_rows_count = max(1, int(_ceil(len(self._gallery_load_files) / float(self._gallery_load_cols))))
+        except Exception:
+            self._gallery_cols_count = self._gallery_load_cols
+            self._gallery_rows_count = 1
+
+        try:
+            chunk_size = int(os.getenv("GALLERY_CHUNK", "20") or 20)
+        except Exception:
+            chunk_size = 20
+        try:
+            chunk_delay = int(os.getenv("GALLERY_CHUNK_DELAY_MS", "0") or 0)
+        except Exception:
+            chunk_delay = 0
+
+        try:
+            if self._gallery_chunk_after_id is not None:
+                self.after_cancel(self._gallery_chunk_after_id)
+        except Exception:
+            pass
+        self._gallery_chunk_after_id = None
+
+        def _create_cell(idx: int, path: str):
             try:
-                # Cell frame per item (button + tags label)
+                r = idx // self._gallery_load_cols
+                c = idx % self._gallery_load_cols
                 cell = ctk.CTkFrame(_container, fg_color="transparent")
-                cell.grid(row=row, column=col, padx=pad, pady=pad, sticky="n")
+                cell.grid(row=r, column=c, padx=pad, pady=pad, sticky="n")
                 try:
                     cell.grid_columnconfigure(0, weight=1)
                 except Exception:
                     pass
-
                 fname = os.path.basename(path)
+                handler = lambda e, p=path: self._open_gallery_context_menu(e, p)
                 btn = ctk.CTkButton(
                     cell,
                     image=placeholder_ctk,
@@ -1831,7 +1960,11 @@ class App(ctk.CTk):
                     command=lambda p=path: self._open_image_viewer(p),
                 )
                 btn.grid(row=0, column=0, sticky="n")
-                # File name under thumbnail (avoid image cropping by button text)
+                try:
+                    btn.bind("<Button-3>", handler)
+                    cell.bind("<Button-3>", handler)
+                except Exception:
+                    pass
                 try:
                     _name = fname
                     if len(_name) > 52:
@@ -1845,13 +1978,18 @@ class App(ctk.CTk):
                 except Exception:
                     pass
                 try:
-                    handler = lambda e, p=path: self._open_gallery_context_menu(e, p)
-                    btn.bind("<Button-3>", handler)
-                    cell.bind("<Button-3>", handler)
+                    vbtn = ctk.CTkButton(cell, text="動画を見る", width=120)
+                    vbtn.grid(row=2, column=0, sticky="n", pady=(6, 0))
+                    try:
+                        vpath = self._gallery_pairs_map.get(fname)
+                    except Exception:
+                        vpath = None
+                    if vpath and os.path.exists(vpath):
+                        vbtn.configure(state="normal", command=lambda vp=vpath: self._open_video(vp))
+                    else:
+                        vbtn.configure(state="disabled")
                 except Exception:
                     pass
-
-                # Show tags under thumbnail
                 try:
                     tags = self._gallery_tags_map.get(fname, [])
                     txt = ", ".join(tags)
@@ -1864,27 +2002,7 @@ class App(ctk.CTk):
                             pass
                 except Exception:
                     pass
-
-                # Always render a "動画を見る" button; enable only when paired
-                try:
-                    vpath = self._gallery_pairs_map.get(fname)
-                    vbtn = ctk.CTkButton(cell, text="動画を見る", width=120)
-                    vbtn.grid(row=2, column=0, pady=(4, 0))
-                    try:
-                        vbtn.bind("<Button-3>", handler)
-                    except Exception:
-                        pass
-                    if vpath:
-                        # If we have a mapping, make it clickable; existence check is best-effort
-                        vbtn.configure(state="normal", command=lambda vp=vpath: self._open_video(vp))
-                    else:
-                        vbtn.configure(state="disabled")
-                except Exception:
-                    pass
-
-                # Dispatch background load
                 future = self._thumb_executor.submit(_load_thumb_pil, path, thumb_w)
-
                 def _on_done(fut, b=btn, fn=fname, p=path, tok=current_token):
                     try:
                         res = fut.result()
@@ -1894,36 +2012,69 @@ class App(ctk.CTk):
                         self.after(0, _apply_thumb, b, fn, p, tok, res)
                     except Exception:
                         pass
-
                 future.add_done_callback(_on_done)
-
-                col += 1
-                if col >= cols:
-                    col = 0
-                    row += 1
             except Exception:
-                continue
+                pass
 
-        # After populating, ensure scrollbar covers full content
-        try:
-            self._refresh_gallery_scrollregion()
-        except Exception:
-            pass
-        # Store gallery layout metrics for dynamic scrolling
-        try:
-            self._gallery_cols_count = max(1, int(cols))
-            # Number of populated rows (add 1 if there is a partial row)
-            total_rows = int(row) + (1 if col > 0 else 0)
-            self._gallery_rows_count = max(1, total_rows)
-        except Exception:
-            pass
-        # Re-apply scrollbar width tuning after layout
-        try:
-            self._tune_gallery_scrollbar()
-        except Exception:
-            pass
+        idx_box = {"i": 0}
+        total = len(self._gallery_load_files)
+
+        def _render_next_chunk():
+            if current_token != self._gallery_load_token:
+                return
+            i = idx_box["i"]
+            if i >= total:
+                try:
+                    self._tune_gallery_scrollbar()
+                except Exception:
+                    pass
+                self._request_gallery_scrollregion_refresh(40)
+                self._gallery_chunk_after_id = None
+                return
+            end = min(total, i + max(1, int(chunk_size)))
+            for j in range(i, end):
+                _create_cell(j, self._gallery_load_files[j])
+            idx_box["i"] = end
+            self._request_gallery_scrollregion_refresh(20)
+            try:
+                self._gallery_chunk_after_id = self.after(max(0, int(chunk_delay)), _render_next_chunk)
+            except Exception:
+                self._gallery_chunk_after_id = None
+
+        _render_next_chunk()
 
     def _open_image_viewer(self, path: str) -> None:
+        # Optional: use native Direct2D viewer (fast scaled drawing)
+        try:
+            use_native = (os.getenv("USE_NATIVE_VIEWER", "0") or "0").strip().lower() not in ("0", "false", "no")
+        except Exception:
+            use_native = False
+        if use_native:
+            try:
+                import sys
+                base = None
+                try:
+                    mp = getattr(sys, "_MEIPASS", None)
+                    if mp:
+                        base = Path(mp)
+                except Exception:
+                    base = None
+                if base is None:
+                    try:
+                        if getattr(sys, "frozen", False):
+                            base = Path(sys.executable).resolve().parent
+                    except Exception:
+                        base = None
+                if base is None:
+                    base = Path(__file__).resolve().parents[2]
+                exe = base / "native" / "build" / "image_viewer_d2d.exe"
+                exe_alt = base / "native" / "image_viewer_d2d.exe"
+                pick = exe if exe.exists() else (exe_alt if exe_alt.exists() else None)
+                if pick is not None and pick.exists():
+                    subprocess.Popen([str(pick), path])
+                    return
+            except Exception:
+                pass
         try:
             img = Image.open(path)
         except Exception as e:
