@@ -36,3 +36,5 @@ build/OBS-Screenshot-Tool
 
 # Updater swap backups
 *.old
+
+dist/OBS-Screenshot-Tool/_internal
