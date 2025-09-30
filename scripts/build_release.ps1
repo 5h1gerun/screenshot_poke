@@ -10,6 +10,7 @@ Push-Location native
 try {
   ./build.ps1
   ./build_viewer.ps1
+  if (Test-Path ./build_automation.ps1) { ./build_automation.ps1 }
 } finally {
   Pop-Location
 }
@@ -23,12 +24,58 @@ if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
 Write-Host "Installing Python dependencies (requirements.txt)"
 py -3 -m pip install -r requirements.txt --disable-pip-version-check | Out-Null
 py -3 -m pip install --upgrade pyinstaller | Out-Null
+py -3 - << 'PY'
+import sys, subprocess
+try:
+    import PIL  # noqa
+except Exception:
+    subprocess.run([sys.executable, '-m', 'pip', 'install', 'pillow'], check=False)
+PY
+
+# Generate packaging/app.ico from icon.png if needed (used by spec and onefile)
+if (-not (Test-Path 'packaging\app.ico') -and (Test-Path 'icon.png')) {
+  Write-Host "Generating packaging\\app.ico from icon.png"
+  py -3 - << 'PY'
+from PIL import Image
+try:
+    Image.open('icon.png').convert('RGBA').save('packaging/app.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
+    print('ICO generated.')
+except Exception as e:
+    print('ICO generation failed:', e)
+PY
+}
 if ($OneFile) {
   Write-Host "Building single-file EXE (--onefile)"
   $adds = @()
   if (Test-Path native\build\thumbnail_wic.dll) { $adds += "--add-binary"; $adds += "native/build/thumbnail_wic.dll;native" }
   if (Test-Path native\build\image_viewer_d2d.exe) { $adds += "--add-binary"; $adds += "native/build/image_viewer_d2d.exe;native" }
-  py -3 -m PyInstaller --noconfirm --clean --noconsole --name OBS-Screenshot-Tool --onefile @adds `
+  if (Test-Path native\build\automation.dll) { $adds += "--add-binary"; $adds += "native/build/automation.dll;native" }
+  # Add MinGW runtime DLLs if present
+  $gxx = $null
+  try { $gxx = (Get-Command g++ -ErrorAction SilentlyContinue).Source } catch {}
+  if ($gxx) {
+    $mingw = Split-Path $gxx -Parent
+    foreach ($dll in @('libstdc++-6.dll','libgcc_s_seh-1.dll','libwinpthread-1.dll')) {
+      $p = Join-Path $mingw $dll
+      if (Test-Path $p) { $adds += "--add-binary"; $adds += "$p;native" }
+    }
+  }
+  # Prepare icon (packaging/app.ico). If missing but icon.png exists, generate.
+  $ico = "packaging\app.ico"
+  if (-not (Test-Path $ico) -and (Test-Path "icon.png")) {
+    Write-Host "Generating packaging\\app.ico from icon.png"
+    py -3 - << 'PY'
+from PIL import Image
+try:
+    Image.open('icon.png').convert('RGBA').save('packaging/app.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
+    print('ICO generated.')
+except Exception as e:
+    print('ICO generation failed:', e)
+PY
+  }
+  $iconArg = @()
+  if (Test-Path $ico) { $iconArg = @('--icon', $ico) }
+  py -3 -m PyInstaller --noconfirm --clean --noconsole --name OBS-Screenshot-Tool --onefile @adds @iconArg `
     --hidden-import customtkinter --hidden-import PIL._tkinter_finder `
     combined_app.py
 } else {

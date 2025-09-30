@@ -14,7 +14,15 @@ from app.utils.logging import UiLogger
 from app.utils import pairs as pairs_utils
 
 
-class RkaisiTeisiThread(threading.Thread):
+try:
+    from app.threads.native_wrappers import is_available as _native_ok, RkaisiTeisiNativeThread as _NativeRkaisi
+except Exception:
+    def _native_ok() -> bool:  # type: ignore
+        return False
+    _NativeRkaisi = None  # type: ignore
+
+
+class PyRkaisiTeisiThread(threading.Thread):
     """Start/Stop OBS recording depending on template presence.
 
     Equivalent to the original behavior with safer, clearer structure.
@@ -172,3 +180,44 @@ class RkaisiTeisiThread(threading.Thread):
             if self._stop.wait(0.5):
                 return
 
+
+class RkaisiTeisiThread(threading.Thread):
+    """Dispatch to native C++ implementation if available; else Python fallback.
+
+    Matches the previous RkaisiTeisiThread interface.
+    """
+
+    MATCH_THRESHOLD = 0.4
+
+    def __init__(self, obs: ObsClient, base_dir: str, logger: Optional[UiLogger] = None, source_name: str = "Capture1", result_queue: Optional["queue.Queue"] = None) -> None:
+        self._use_native = bool(_native_ok())
+        self._th: Optional[threading.Thread]
+        if self._use_native and _NativeRkaisi is not None:
+            # Native expects handan dir (where scene2.png and templates live)
+            self._th = _NativeRkaisi(obs, base_dir, logger, source_name=source_name, result_queue=result_queue, threshold=self.MATCH_THRESHOLD)
+        else:
+            self._th = PyRkaisiTeisiThread(obs, base_dir, logger, source_name=source_name, result_queue=result_queue)
+
+    def start(self) -> None:  # type: ignore[override]
+        if self._th:
+            self._th.start()
+
+    def is_alive(self) -> bool:  # type: ignore[override]
+        try:
+            return bool(self._th and self._th.is_alive())
+        except Exception:
+            return False
+
+    def join(self, timeout: Optional[float] = None) -> None:  # type: ignore[override]
+        try:
+            if self._th:
+                self._th.join(timeout=timeout)
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        try:
+            if self._th and hasattr(self._th, "stop"):
+                getattr(self._th, "stop")()  # type: ignore[misc]
+        except Exception:
+            pass
