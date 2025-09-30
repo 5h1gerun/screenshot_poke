@@ -28,7 +28,7 @@ class PyRkaisiTeisiThread(threading.Thread):
     Equivalent to the original behavior with safer, clearer structure.
     """
 
-    MATCH_THRESHOLD = 0.4
+    MATCH_THRESHOLD = 0.6
 
     def __init__(self, obs: ObsClient, base_dir: str, logger: Optional[UiLogger] = None, source_name: str = "Capture1", result_queue: Optional["queue.Queue"] = None) -> None:
         super().__init__(daemon=True)
@@ -41,6 +41,14 @@ class PyRkaisiTeisiThread(threading.Thread):
         self._source = source_name
         # Optional: publish stop marker for default-win logic
         self._rq = result_queue
+        # Allow threshold override via env (affects both start/stop in Python path)
+        try:
+            import os as _os
+            env_th = _os.getenv("RKAISI_MATCH_THRESHOLD", "")
+            if env_th:
+                self.MATCH_THRESHOLD = float(env_th)
+        except Exception:
+            pass
 
         # Paths
         self._scene_path = os.path.join(self._base, "scene2.png")
@@ -241,14 +249,20 @@ class RkaisiTeisiThread(threading.Thread):
     Matches the previous RkaisiTeisiThread interface.
     """
 
-    MATCH_THRESHOLD = 0.4
+    MATCH_THRESHOLD = 0.6
 
     def __init__(self, obs: ObsClient, base_dir: str, logger: Optional[UiLogger] = None, source_name: str = "Capture1", result_queue: Optional["queue.Queue"] = None) -> None:
         self._use_native = bool(_native_ok())
         self._th: Optional[threading.Thread]
         if self._use_native and _NativeRkaisi is not None:
             # Native expects handan dir (where scene2.png and templates live)
-            self._th = _NativeRkaisi(obs, base_dir, logger, source_name=source_name, result_queue=result_queue, threshold=self.MATCH_THRESHOLD)
+            # Allow raising/lowering match threshold via env for native path too
+            try:
+                import os as _os
+                thr = float((_os.getenv("RKAISI_MATCH_THRESHOLD", str(self.MATCH_THRESHOLD)) or self.MATCH_THRESHOLD))
+            except Exception:
+                thr = self.MATCH_THRESHOLD
+            self._th = _NativeRkaisi(obs, base_dir, logger, source_name=source_name, result_queue=result_queue, threshold=thr)
         else:
             self._th = PyRkaisiTeisiThread(obs, base_dir, logger, source_name=source_name, result_queue=result_queue)
 
