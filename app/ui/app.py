@@ -15,6 +15,7 @@ from typing import Optional, Dict, List
 
 import json
 import subprocess
+import time
 import tkinter.simpledialog as sd
 
 import customtkinter as ctk
@@ -273,6 +274,21 @@ class App(ctk.CTk):
         self.recordings_dir_entry.grid(row=8, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="Browse", width=80, command=self._browse_recordings_dir).grid(row=8, column=2, padx=8, pady=4)
         ctk.CTkButton(obs_frame, text="From OBS", width=90, command=self._fetch_recordings_dir_from_obs).grid(row=8, column=3, padx=(0,8), pady=4)
+
+        # Quick diagnostics
+        diag = ctk.CTkFrame(obs_frame, corner_radius=8)
+        diag.grid(row=9, column=0, columnspan=4, sticky="we", padx=8, pady=(2, 8))
+        try:
+            diag.grid_columnconfigure(0, weight=0)
+            diag.grid_columnconfigure(1, weight=0)
+            diag.grid_columnconfigure(2, weight=0)
+            diag.grid_columnconfigure(3, weight=1)
+        except Exception:
+            pass
+        ctk.CTkLabel(diag, text="Diagnostics:").grid(row=0, column=0, padx=(8,6), pady=6)
+        ctk.CTkButton(diag, text="Test Screenshot", width=120, command=self._test_screenshot).grid(row=0, column=1, padx=6, pady=6)
+        ctk.CTkButton(diag, text="Test Start Rec", width=120, command=self._test_start_rec).grid(row=0, column=2, padx=6, pady=6)
+        ctk.CTkButton(diag, text="Test Stop Rec", width=120, command=self._test_stop_rec).grid(row=0, column=3, padx=6, pady=6)
 
         # Scripts
         script_frame = ctk.CTkFrame(sidebar, corner_radius=10)
@@ -864,6 +880,7 @@ class App(ctk.CTk):
                 self._append_log("[Discord] Webhook URL が未設定のため開始しません")
 
     def _stop_threads(self) -> None:
+        # Signal threads to stop
         for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord, self._th_result_assoc):
             try:
                 if th and th.is_alive():
@@ -871,13 +888,47 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        # Optional join to let threads exit promptly
+        # Join with a bit more patience so recording can stop before disconnect
+        deadline = time.time() + 5.0
         for th in (self._th_double, self._th_rkaisi, self._th_syouhai, self._th_discord, self._th_result_assoc):
             try:
-                if th:
-                    th.join(timeout=1.0)
+                if not th:
+                    continue
+                rem = max(0.1, deadline - time.time())
+                th.join(timeout=rem)
             except Exception:
                 pass
+
+        # As a last safety, if OBS is still recording, stop it before disconnecting
+        if self._obs is not None:
+            try:
+                st = self._obs.is_recording()
+            except Exception:
+                st = None
+            if st is True:
+                try:
+                    self._append_log("[アプリ] 録画を停止しています…")
+                    # Prefer v5 method/hotkey/toggle with diagnostics
+                    method = None
+                    try:
+                        method = self._obs.stop_recording_diag()
+                        self._append_log(f"[アプリ] 停止メソッド: {method}")
+                    except Exception:
+                        self._obs.stop_recording()
+                        self._append_log("[アプリ] 停止メソッド: legacy")
+                    # Poll up to ~10s to confirm
+                    for _ in range(50):
+                        stat = self._obs.is_recording()
+                        if stat is False:
+                            break
+                        time.sleep(0.2)
+                except Exception:
+                    pass
+                # Small grace to let files flush
+                try:
+                    time.sleep(0.3)
+                except Exception:
+                    pass
 
         if self._obs is not None:
             try:
@@ -888,6 +939,63 @@ class App(ctk.CTk):
             self._obs = None
 
         mb.showinfo("停止", "すべてのスレッドを停止しました。")
+
+    # --- Diagnostics ---
+    def _test_screenshot(self) -> None:
+        try:
+            if not self._obs:
+                mb.showerror("OBS", "まずOBSに接続してください")
+                return
+            src = self.source_opt.get().strip() or os.getenv("OBS_SOURCE", "Capture1")
+            base = self.base_dir_entry.get().strip() or os.getcwd()
+            handan = os.path.join(base, "handantmp")
+            os.makedirs(handan, exist_ok=True)
+            path = os.path.join(handan, "test_scene.png")
+            self._obs.take_screenshot(src, path)
+            ok = os.path.isfile(path) and os.path.getsize(path) > 0
+            if ok:
+                self._append_log(f"[診断] スクリーンショット成功 -> {path}")
+                mb.showinfo("Screenshot", f"OK -> {path}")
+            else:
+                self._append_log(f"[診断] スクリーンショット失敗 -> {path}")
+                mb.showerror("Screenshot", f"失敗 -> {path}")
+        except Exception as e:
+            self._append_log(f"[診断] スクリーンショット例外: {e}")
+            mb.showerror("Screenshot", str(e))
+
+    def _test_start_rec(self) -> None:
+        try:
+            if not self._obs:
+                mb.showerror("OBS", "まずOBSに接続してください")
+                return
+            method = None
+            try:
+                method = self._obs.start_recording_diag()
+            except Exception:
+                self._obs.start_recording()
+                method = "legacy"
+            self._append_log(f"[診断] 録画開始メソッド: {method}")
+            mb.showinfo("Start Recording", f"Method: {method}")
+        except Exception as e:
+            self._append_log(f"[診断] 録画開始例外: {e}")
+            mb.showerror("Start Recording", str(e))
+
+    def _test_stop_rec(self) -> None:
+        try:
+            if not self._obs:
+                mb.showerror("OBS", "まずOBSに接続してください")
+                return
+            method = None
+            try:
+                method = self._obs.stop_recording_diag()
+            except Exception:
+                self._obs.stop_recording()
+                method = "legacy"
+            self._append_log(f"[診断] 録画停止メソッド: {method}")
+            mb.showinfo("Stop Recording", f"Method: {method}")
+        except Exception as e:
+            self._append_log(f"[診断] 録画停止例外: {e}")
+            mb.showerror("Stop Recording", str(e))
 
     # --- Stats UI ---
     def _build_stats_ui(self, parent: ctk.CTkFrame) -> None:

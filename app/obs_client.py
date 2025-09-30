@@ -89,6 +89,25 @@ class ObsClient:
                 return
         except Exception:
             pass
+        # v4/v5: TriggerHotkeyByName fallback
+        try:
+            req = getattr(requests, "TriggerHotkeyByName", None)
+            if req is not None:
+                with self._lock:
+                    # OBS internal hotkey names
+                    self._ws.call(req(hotkeyName="OBSBasic.StartRecording"))
+                return
+        except Exception:
+            pass
+        # v4 toggle fallback when state unknown
+        try:
+            req = getattr(requests, "StartStopRecording", None) or getattr(requests, "ToggleRecording", None)
+            if req is not None:
+                with self._lock:
+                    self._ws.call(req())
+                return
+        except Exception:
+            pass
         # Last resort: try generic call name if available
         try:
             req = getattr(requests, "StartRecording", None)
@@ -100,6 +119,47 @@ class ObsClient:
             pass
         # If none succeeded, raise
         raise RuntimeError("Failed to start recording via obs-websocket")
+
+    def start_recording_diag(self) -> str:
+        """Start recording and return the method name used.
+
+        Tries multiple strategies and returns a string label of the first
+        that succeeded (no exception). Raises if all fail.
+        """
+        # Optional preference via env
+        pref = (os.getenv("OBS_RECORD_METHOD", "") or "").strip().lower()
+
+        def _try(name: str, kwargs: Optional[dict] = None) -> bool:
+            cls = getattr(requests, name, None)
+            if cls is None:
+                return False
+            with self._lock:
+                self._ws.call(cls(**(kwargs or {})))
+            return True
+
+        tried: list[str] = []
+        # Preferred
+        if pref in ("startrecord", "v5") and _try("StartRecord"):
+            return "StartRecord"
+        if pref in ("startrecording", "v4") and _try("StartRecording"):
+            return "StartRecording"
+        if pref in ("hotkey",):
+            if _try("TriggerHotkeyByName", {"hotkeyName": "OBSBasic.StartRecording"}):
+                return "TriggerHotkeyByName"
+        if pref in ("toggle",):
+            if _try("StartStopRecording") or _try("ToggleRecording"):
+                return "ToggleRecording"
+
+        # Normal order: v5 -> v4 -> hotkey -> toggle
+        if _try("StartRecord"):
+            return "StartRecord"
+        if _try("StartRecording"):
+            return "StartRecording"
+        if _try("TriggerHotkeyByName", {"hotkeyName": "OBSBasic.StartRecording"}):
+            return "TriggerHotkeyByName"
+        if _try("StartStopRecording") or _try("ToggleRecording"):
+            return "ToggleRecording"
+        raise RuntimeError("Failed to start recording via obs-websocket (all methods)")
 
     def stop_recording(self) -> None:
         """Stop recording with compatibility across OBS websocket variants."""
@@ -126,7 +186,58 @@ class ObsClient:
             return
         except Exception:
             pass
+        # v4/v5: TriggerHotkeyByName fallback
+        try:
+            req = getattr(requests, "TriggerHotkeyByName", None)
+            if req is not None:
+                with self._lock:
+                    self._ws.call(req(hotkeyName="OBSBasic.StopRecording"))
+                return
+        except Exception:
+            pass
+        # v4 toggle fallback when state unknown
+        try:
+            req = getattr(requests, "StartStopRecording", None) or getattr(requests, "ToggleRecording", None)
+            if req is not None:
+                with self._lock:
+                    self._ws.call(req())
+                return
+        except Exception:
+            pass
         raise RuntimeError("Failed to stop recording via obs-websocket")
+
+    def stop_recording_diag(self) -> str:
+        """Stop recording and return the method name used."""
+        pref = (os.getenv("OBS_RECORD_METHOD", "") or "").strip().lower()
+
+        def _try(name: str, kwargs: Optional[dict] = None) -> bool:
+            cls = getattr(requests, name, None)
+            if cls is None:
+                return False
+            with self._lock:
+                self._ws.call(cls(**(kwargs or {})))
+            return True
+
+        if pref in ("startrecord", "v5") and _try("StopRecord"):
+            return "StopRecord"
+        if pref in ("startrecording", "v4") and _try("StopRecording"):
+            return "StopRecording"
+        if pref in ("hotkey",):
+            if _try("TriggerHotkeyByName", {"hotkeyName": "OBSBasic.StopRecording"}):
+                return "TriggerHotkeyByName"
+        if pref in ("toggle",):
+            if _try("StartStopRecording") or _try("ToggleRecording"):
+                return "ToggleRecording"
+
+        if _try("StopRecord"):
+            return "StopRecord"
+        if _try("StopRecording"):
+            return "StopRecording"
+        if _try("TriggerHotkeyByName", {"hotkeyName": "OBSBasic.StopRecording"}):
+            return "TriggerHotkeyByName"
+        if _try("StartStopRecording") or _try("ToggleRecording"):
+            return "ToggleRecording"
+        raise RuntimeError("Failed to stop recording via obs-websocket (all methods)")
 
     def is_recording(self) -> Optional[bool]:
         """Return True if recording is active, False if not, or None if unknown."""
@@ -329,20 +440,20 @@ class ObsClient:
     def take_screenshot(self, source_name: str, save_path: str) -> None:
         """Take a screenshot of a source and write it to ``save_path``.
 
-        Tries multiple strategies for compatibility with different OBS versions:
-        1) v4: TakeSourceScreenshot (base64 in 'img')
-        2) v4: SaveSourceScreenshot (saved to file)
-        3) v5 compat: GetSourceScreenshot (base64 in 'imageData') if available
+        Preference can be controlled via env `OBS_SCREENSHOT_METHOD`:
+        - file/save: use SaveSourceScreenshot first (reduces WebSocket payload)
+        - v5/get/base64: use GetSourceScreenshot first
+        - v4/take: use TakeSourceScreenshot first
+        Default: auto (file -> v5 -> v4)
+        Optional downscale with `OBS_SCREENSHOT_WIDTH`/`OBS_SCREENSHOT_HEIGHT` for v5.
         """
 
         def _write_b64(data_uri_or_b64: str) -> bool:
             try:
                 s = data_uri_or_b64 or ""
-                # Strip any data URI prefix
                 if "," in s and s.lower().startswith("data:image"):
                     s = s.split(",", 1)[1]
                 b = s.encode("utf-8")
-                # Fix missing padding if any
                 pad = len(b) % 4
                 if pad:
                     b += b"=" * (4 - pad)
@@ -354,27 +465,44 @@ class ObsClient:
             except Exception:
                 return False
 
-        # 1) OBS v4: TakeSourceScreenshot (embedded base64)
-        try:
-            with self._lock:
-                res = self._ws.call(
-                    requests.TakeSourceScreenshot(
-                        sourceName=source_name, embedPictureFormat="png", width=None, height=None
-                    )
-                )
-            d = getattr(res, "datain", {}) or {}
-            data = d.get("img") or d.get("imageData")  # some compat layers use 'imageData'
-            if data and _write_b64(str(data)):
-                return
-        except Exception:
-            # continue to fallback
-            pass
+        pref = (os.getenv("OBS_SCREENSHOT_METHOD", "") or "").strip().lower()
 
-        # 2) OBS v4: SaveSourceScreenshot (saved to file on OBS host)
-        try:
-            req_cls = getattr(requests, "SaveSourceScreenshot", None)
-            if req_cls is not None:
-                # Try both common param names across variants
+        def _try_v5_get() -> bool:
+            try:
+                req_cls = getattr(requests, "GetSourceScreenshot", None)
+                if req_cls is None:
+                    return False
+                try:
+                    w = int(os.getenv("OBS_SCREENSHOT_WIDTH", "0") or 0)
+                except Exception:
+                    w = 0
+                try:
+                    h = int(os.getenv("OBS_SCREENSHOT_HEIGHT", "0") or 0)
+                except Exception:
+                    h = 0
+                with self._lock:
+                    res = self._ws.call(req_cls(sourceName=source_name, imageFormat="png", imageWidth=w, imageHeight=h))
+                d = getattr(res, "datain", {}) or {}
+                data = d.get("imageData") or d.get("img")
+                return bool(data and _write_b64(str(data)))
+            except Exception:
+                return False
+
+        def _try_v4_take() -> bool:
+            try:
+                with self._lock:
+                    res = self._ws.call(requests.TakeSourceScreenshot(sourceName=source_name, embedPictureFormat="png", width=None, height=None))
+                d = getattr(res, "datain", {}) or {}
+                data = d.get("img") or d.get("imageData")
+                return bool(data and _write_b64(str(data)))
+            except Exception:
+                return False
+
+        def _try_v4_save() -> bool:
+            try:
+                req_cls = getattr(requests, "SaveSourceScreenshot", None)
+                if req_cls is None:
+                    return False
                 for kwargs in (
                     {"sourceName": source_name, "imageFormat": "png", "imageFilePath": save_path},
                     {"sourceName": source_name, "imageFormat": "png", "saveToFilePath": save_path},
@@ -382,29 +510,30 @@ class ObsClient:
                     try:
                         with self._lock:
                             self._ws.call(req_cls(**kwargs))
-                        # If OBS saved the file where we can see it, we're done
                         if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-                            return
+                            return True
                     except Exception:
                         continue
-        except Exception:
-            pass
+            except Exception:
+                pass
+            return False
 
-        # 3) OBS v5: GetSourceScreenshot (compat libraries may expose this)
-        try:
-            req_cls = getattr(requests, "GetSourceScreenshot", None)
-            if req_cls is not None:
-                with self._lock:
-                    res = self._ws.call(
-                        req_cls(sourceName=source_name, imageFormat="png", imageWidth=0, imageHeight=0)
-                    )
-                d = getattr(res, "datain", {}) or {}
-                data = d.get("imageData") or d.get("img")
-                if data and _write_b64(str(data)):
-                    return
-        except Exception:
-            pass
+        if pref in ("file", "save"):
+            if _try_v4_save() or _try_v5_get() or _try_v4_take():
+                return
+            raise ValueError("OBS did not return a screenshot image (pref=file)")
+        if pref in ("v5", "get", "base64"):
+            if _try_v5_get() or _try_v4_take() or _try_v4_save():
+                return
+            raise ValueError("OBS did not return a screenshot image (pref=v5)")
+        if pref in ("v4", "take"):
+            if _try_v4_take() or _try_v5_get() or _try_v4_save():
+                return
+            raise ValueError("OBS did not return a screenshot image (pref=v4)")
 
+        # Auto: file first to reduce payload, then v5, then v4
+        if _try_v4_save() or _try_v5_get() or _try_v4_take():
+            return
         raise ValueError("OBS did not return a screenshot image.")
 
     # --- Low-level access if needed by advanced flows ---

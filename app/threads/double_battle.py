@@ -15,7 +15,15 @@ from app.utils import paths as paths_utils
 from app.utils.logging import UiLogger
 
 
-class DoubleBattleThread(threading.Thread):
+try:
+    from app.threads.native_wrappers import is_available as _native_ok, DoubleBattleNativeThread as _NativeDouble
+except Exception:
+    def _native_ok() -> bool:  # type: ignore
+        return False
+    _NativeDouble = None  # type: ignore
+
+
+class PyDoubleBattleThread(threading.Thread):
     """Detect a specific board state by template matching and prepare output images.
 
     Behavior mirrors the original DoubleBattleThread but uses ObsClient and helpers.
@@ -173,3 +181,48 @@ class DoubleBattleThread(threading.Thread):
                 if self._stop.wait(1):
                     return
 
+
+class DoubleBattleThread(threading.Thread):
+    """Dispatch to native C++ implementation if available; else Python fallback.
+
+    Matches the previous DoubleBattleThread interface.
+    """
+
+    def __init__(
+        self,
+        obs: ObsClient,
+        base_dir: str,
+        logger: Optional[UiLogger] = None,
+        source_name: str = "Capture1",
+        capture_interval_sec: float = 2.0,
+    ) -> None:
+        self._use_native = bool(_native_ok())
+        self._th: Optional[threading.Thread]
+        if self._use_native and _NativeDouble is not None:
+            self._th = _NativeDouble(obs, base_dir, logger, source_name=source_name, capture_interval_sec=capture_interval_sec)
+        else:
+            self._th = PyDoubleBattleThread(obs, base_dir, logger, source_name=source_name, capture_interval_sec=capture_interval_sec)
+
+    def start(self) -> None:  # type: ignore[override]
+        if self._th:
+            self._th.start()
+
+    def is_alive(self) -> bool:  # type: ignore[override]
+        try:
+            return bool(self._th and self._th.is_alive())
+        except Exception:
+            return False
+
+    def join(self, timeout: Optional[float] = None) -> None:  # type: ignore[override]
+        try:
+            if self._th:
+                self._th.join(timeout=timeout)
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        try:
+            if self._th and hasattr(self._th, "stop"):
+                getattr(self._th, "stop")()  # type: ignore[misc]
+        except Exception:
+            pass

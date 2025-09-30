@@ -14,7 +14,15 @@ from app.utils.logging import UiLogger
 from app.utils import pairs as pairs_utils
 
 
-class RkaisiTeisiThread(threading.Thread):
+try:
+    from app.threads.native_wrappers import is_available as _native_ok, RkaisiTeisiNativeThread as _NativeRkaisi
+except Exception:
+    def _native_ok() -> bool:  # type: ignore
+        return False
+    _NativeRkaisi = None  # type: ignore
+
+
+class PyRkaisiTeisiThread(threading.Thread):
     """Start/Stop OBS recording depending on template presence.
 
     Equivalent to the original behavior with safer, clearer structure.
@@ -44,6 +52,17 @@ class RkaisiTeisiThread(threading.Thread):
         # Rects
         self._masu1_rect: Rect = ((1541, 229), (1651, 843))
         self._mark_rect: Rect = ((0, 0), (96, 72))
+        # Poll/guard durations (seconds), tunable via env. Defaults preserve prior behavior.
+        try:
+            import os as _os
+            self._poll_sec = float((_os.getenv("RKAISI_START_POLL_SEC", "2") or 2))
+        except Exception:
+            self._poll_sec = 2.0
+        try:
+            import os as _os
+            self._guard_sec = float((_os.getenv("RKAISI_GUARD_SEC", "140") or 140))
+        except Exception:
+            self._guard_sec = 140.0
 
     def stop(self) -> None:
         self._stop.set()
@@ -66,9 +85,24 @@ class RkaisiTeisiThread(threading.Thread):
                 try:
                     if self._rec_start_ts is not None:
                         root_base = os.path.dirname(self._base)
-                        pairs_utils.associate_recording_window(root_base, self._rec_start_ts, time.time())
-                except Exception:
-                    pass
+                        rec_dir = os.getenv("RECORDINGS_DIR", "").strip()
+                        if not rec_dir:
+                            self._log.log("[組合せ] RECORDINGS_DIR が未設定のため録画ファイルを特定できません")
+                        else:
+                            start_ts = float(self._rec_start_ts)
+                            end_ts = time.time()
+                            video = pairs_utils.find_recording_file(rec_dir, start_ts, end_ts)
+                            if not video:
+                                self._log.log("[組合せ] 録画ファイルが見つかりませんでした（時間範囲/拡張子/マージンを確認）")
+                            else:
+                                mapping = pairs_utils.associate_recording_window(root_base, start_ts, end_ts)
+                                base = os.path.basename(video)
+                                if mapping is not None:
+                                    self._log.log(f"[組合せ] 画像と録画を関連付けました -> {base}")
+                                else:
+                                    self._log.log(f"[組合せ] 関連付けに失敗しました -> {base}")
+                except Exception as e:
+                    self._log.log(f"[組合せ] エラー: {e}")
             self._log.log("[録開始/停止] スレッド停止")
 
     # --- internals ---
@@ -97,32 +131,60 @@ class RkaisiTeisiThread(threading.Thread):
         if (not self._recording) and match_template(masu1_crop_img, masu_tpl, self.MATCH_THRESHOLD, grayscale=False):
             self._log.log("[録開始/停止] 'masu1' 検出 → 録画開始")
             started = False
+            unknown_count = 0
             try:
-                self._obs.start_recording()
+                try:
+                    method = self._obs.start_recording_diag()
+                    self._log.log(f"[録開始/停止] 開始メソッド: {method}")
+                except Exception:
+                    # Fallback to legacy wrapper
+                    self._obs.start_recording()
+                    self._log.log("[録開始/停止] 開始メソッド: legacy")
                 # Verify it actually started (poll briefly)
-                for _ in range(10):
+                iters = max(1, int(self._poll_sec / 0.2))
+                for _ in range(iters):
                     st = self._obs.is_recording()
                     if st is True:
                         started = True
                         break
+                    if st is None:
+                        unknown_count += 1
                     time.sleep(0.2)
                 # One retry if not started
                 if not started:
-                    self._obs.start_recording()
-                    for _ in range(10):
+                    try:
+                        method2 = self._obs.start_recording_diag()
+                        self._log.log(f"[録開始/停止] 再試行メソッド: {method2}")
+                    except Exception:
+                        self._obs.start_recording()
+                        self._log.log("[録開始/停止] 再試行メソッド: legacy")
+                    for _ in range(iters):
                         st = self._obs.is_recording()
                         if st is True:
                             started = True
                             break
+                        if st is None:
+                            unknown_count += 1
                         time.sleep(0.2)
             except Exception as e:
                 self._log.log(f"[録開始/停止] 録画開始に失敗: {e}")
                 started = False
 
+            if (not started) and unknown_count >= 16:
+                # 状態が取れない互換環境向け: 環境変数で強制開始扱い
+                try:
+                    import os as _os
+                    assume = (_os.getenv("RKAISI_ASSUME_START", "false") or "false").strip().lower()
+                except Exception:
+                    assume = "false"
+                if assume in ("1", "true", "yes", "on"):
+                    self._log.log("[録開始/停止] 録画状態が不明のため開始扱いで継続 (RKAISI_ASSUME_START=true)")
+                    started = True
+
             if started:
                 self._recording = True
                 self._rec_start_ts = time.time()
-                if self._stop.wait(140):
+                if self._stop.wait(self._guard_sec):
                     return
                 return
             else:
@@ -172,3 +234,44 @@ class RkaisiTeisiThread(threading.Thread):
             if self._stop.wait(0.5):
                 return
 
+
+class RkaisiTeisiThread(threading.Thread):
+    """Dispatch to native C++ implementation if available; else Python fallback.
+
+    Matches the previous RkaisiTeisiThread interface.
+    """
+
+    MATCH_THRESHOLD = 0.4
+
+    def __init__(self, obs: ObsClient, base_dir: str, logger: Optional[UiLogger] = None, source_name: str = "Capture1", result_queue: Optional["queue.Queue"] = None) -> None:
+        self._use_native = bool(_native_ok())
+        self._th: Optional[threading.Thread]
+        if self._use_native and _NativeRkaisi is not None:
+            # Native expects handan dir (where scene2.png and templates live)
+            self._th = _NativeRkaisi(obs, base_dir, logger, source_name=source_name, result_queue=result_queue, threshold=self.MATCH_THRESHOLD)
+        else:
+            self._th = PyRkaisiTeisiThread(obs, base_dir, logger, source_name=source_name, result_queue=result_queue)
+
+    def start(self) -> None:  # type: ignore[override]
+        if self._th:
+            self._th.start()
+
+    def is_alive(self) -> bool:  # type: ignore[override]
+        try:
+            return bool(self._th and self._th.is_alive())
+        except Exception:
+            return False
+
+    def join(self, timeout: Optional[float] = None) -> None:  # type: ignore[override]
+        try:
+            if self._th:
+                self._th.join(timeout=timeout)
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        try:
+            if self._th and hasattr(self._th, "stop"):
+                getattr(self._th, "stop")()  # type: ignore[misc]
+        except Exception:
+            pass

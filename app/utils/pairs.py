@@ -171,7 +171,12 @@ def associate_recording_window(base_dir: str, start: float, end: float) -> Optio
     if not video:
         return None
 
-    names = list_images_in_range(base_dir, start, end)
+    # Expand image search window slightly to tolerate timing skew
+    try:
+        _img_margin = float(os.getenv("IMAGES_MATCH_MARGIN_SEC", "5") or 5)
+    except Exception:
+        _img_margin = 5.0
+    names = list_images_in_range(base_dir, max(0.0, start - max(0.0, _img_margin)), end + max(0.0, _img_margin))
     if not names:
         return None
 
