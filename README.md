@@ -1,4 +1,4 @@
-# OBS Screenshot / Template Tool（詳細版 README）
+# OBS Screenshot / Template Tool
 
 CustomTkinter 製のデスクトップ GUI アプリです。OBS WebSocket と連携し、以下を自動化します。
 - 指定ソースのスクリーンショット取得とテンプレート照合
