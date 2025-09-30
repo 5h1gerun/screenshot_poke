@@ -1,5 +1,20 @@
 # OBS Screenshot / Template Tool（詳細版 README）
 
+---
+
+## Native acceleration (C++)
+- Thumbnails: `native/thumbnail_wic.dll` provides fast WIC-based thumbnailing. Enabled by default via `USE_NATIVE_THUMB=1`.
+- Batch thumbnails: `gen_thumbnails_w` 一括生成API（Python: `generate_thumbnails_batch_native`）。
+- Crop/Resize: `crop_resize_w`（Python: `crop_resize_native`）で矩形切り出し＋縮小を高速化。
+- Vertical concat: `vconcat_w`（Python: `vconcat_native`）で画像の縦連結を高速化。
+- Template matching: 同DLLにテンプレ一致を実装。環境変数 `USE_NATIVE_MATCH=1` で有効化。
+  - Python側の `DoubleBattle` / `RkaisiTeisi` / `Syouhai` は、利用可能ならネイティブ一致を使用し、無ければOpenCVにフォールバック。
+- Build on Windows (MinGW g++ in PATH):
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File native/build.ps1`
+  - or: `g++ -std=c++17 -O2 -shared -static-libstdc++ -static-libgcc -o native/build/thumbnail_wic.dll native/thumbnail_wic.cpp -lole32 -loleaut32 -lwindowscodecs`
+
+動作サンプル: `scripts/test_native_match.py`, `scripts/test_image_ops.py`
+
 CustomTkinter 製のデスクトップ GUI アプリです。OBS WebSocket と連携し、以下を自動化します。
 - 指定ソースのスクリーンショット取得とテンプレート照合
 - 条件検知に応じた録画開始/停止（OBS 側）
@@ -190,4 +205,3 @@ powershell -ExecutionPolicy Bypass -File scripts/build_exe.ps1 -OneFile:$false -
 - UI: `app/ui/app.py`（CustomTkinter によるメイン画面・ギャラリー・統計）
 
 必要に応じて、座標やしきい値、テキストソース名などをコード側で調整してください。
-

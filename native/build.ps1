@@ -12,7 +12,7 @@ $dst = Join-Path $outDir 'thumbnail_wic.dll'
 
 Write-Host "Building native thumbnail DLL -> $dst"
 
-& g++ -std=c++17 -O2 -shared -o $dst $src -lole32 -loleaut32 -lwindowscodecs
+& g++ -std=c++17 -O2 -shared -static-libstdc++ -static-libgcc -o $dst $src -lole32 -loleaut32 -lwindowscodecs
 if ($LASTEXITCODE -ne 0) {
     throw "Build failed with exit code $LASTEXITCODE"
 }

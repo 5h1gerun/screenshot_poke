@@ -11,6 +11,15 @@ import numpy as np
 
 from app.obs_client import ObsClient
 from app.utils.image import crop_by_coords_list, crop_image_by_rect, match_template
+try:
+    from app.utils.native_match import (
+        match_template_region_native as _match_native_region,
+        NATIVE_AVAILABLE as _NATIVE_MATCH,
+    )
+except Exception:
+    def _match_native_region(*_args, **_kwargs):
+        return False
+    _NATIVE_MATCH = False
 from app.utils import paths as paths_utils
 from app.utils.logging import UiLogger
 
@@ -111,7 +120,14 @@ class DoubleBattleThread(threading.Thread):
         masu_area_path = os.path.join(self._handan, "masu_area.png")
         cv2.imwrite(masu_area_path, masu_area)
 
-        if match_template(masu_area, masu_img, threshold=0.6, grayscale=False):
+        # Prefer native region matcher when available and enabled via env
+        try:
+            use_native = (os.getenv("USE_NATIVE_MATCH", "1") or "1").strip().lower() not in ("0", "false", "no")
+        except Exception:
+            use_native = True
+
+        if (use_native and _NATIVE_MATCH and _match_native_region(self._scene_path, self._masu_rect, self._masu_path, 0.6)) \
+           or (not (use_native and _NATIVE_MATCH) and match_template(masu_area, masu_img, threshold=0.6, grayscale=False)):
             self._log.log("[ダブルバトル] 'masu' テンプレートを検出")
 
             # Keep recent crop for broadcasting
@@ -125,13 +141,55 @@ class DoubleBattleThread(threading.Thread):
             self._log.log(f"[ダブルバトル] 保存しました: {dst}")
 
             # While masu continues to appear, attempt to match reference tiles
-            while match_template(masu_area, masu_img, threshold=0.6, grayscale=False):
+            # Re-evaluate presence of 'masu' each iteration
+            def _has_masu(scene_path: str, area_img, tpl_img) -> bool:
+                if use_native and _NATIVE_MATCH:
+                    return _match_native_region(scene_path, self._masu_rect, self._masu_path, 0.6)
+                return match_template(area_img, tpl_img, threshold=0.6, grayscale=False)
+
+            while _has_masu(self._scene_path, masu_area, masu_img):
                 if self._stop.is_set():
                     return
                 self._obs.take_screenshot(self._source, self._scene_path)
                 scene = cv2.imread(self._scene_path)
                 masu_area = crop_image_by_rect(scene, self._masu_rect)
                 cv2.imwrite(masu_area_path, masu_area)
+
+                # Native matching branch (bypass Python/OpenCV path below)
+                if use_native and _NATIVE_MATCH:
+                    coords: Sequence[Tuple[int, int, int, int]] = (
+                        (146, 138, 933, 255),
+                        (146, 255, 933, 372),
+                        (146, 372, 933, 489),
+                        (146, 489, 933, 606),
+                        (146, 606, 933, 723),
+                        (146, 723, 933, 840),
+                    )
+
+                    matched_new: list[np.ndarray] = []
+                    all_ok = True
+                    for idx, tag_path in enumerate(self._ref_paths):
+                        found = False
+                        for (x1, y1, x2, y2) in coords:
+                            rect = ((x1, y1), (x2, y2))
+                            if _match_native_region(self._scene_path, rect, tag_path, 0.8):
+                                cimg = scene[int(y1):int(y2), int(x1):int(x2)]
+                                matched_new.append(cimg)
+                                found = True
+                                break
+                        if not found:
+                            self._log.log(f"[繝繝悶Ν繝舌ヨ繝ｫ] 繧ｿ繧ｰ{idx + 1} 縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ")
+                            all_ok = False
+                            break
+
+                    if all_ok and len(matched_new) == 4:
+                        combined = cv2.vconcat(matched_new)
+                        cv2.imwrite(self._haisinsensyutu_path, combined)
+                        self._log.log(f"[繝繝悶Ν繝舌ヨ繝ｫ] 謚ｽ蜃ｺ逕ｻ蜒上ｒ譖ｸ縺榊・縺・ {self._haisinsensyutu_path}")
+                    # Stay responsive to stop while looping
+                    if self._stop.wait(1):
+                        return
+                    continue
 
                 tag_images = [cv2.imread(p) for p in self._ref_paths]
                 if any(t is None for t in tag_images):

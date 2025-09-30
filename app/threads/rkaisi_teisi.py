@@ -10,6 +10,15 @@ import cv2
 
 from app.obs_client import ObsClient
 from app.utils.image import Rect, crop_image_by_rect, match_template
+try:
+    from app.utils.native_match import (
+        match_template_region_native as _match_native_region,
+        NATIVE_AVAILABLE as _NATIVE_MATCH,
+    )
+except Exception:
+    def _match_native_region(*_args, **_kwargs):
+        return False
+    _NATIVE_MATCH = False
 from app.utils.logging import UiLogger
 from app.utils import pairs as pairs_utils
 
@@ -94,7 +103,18 @@ class RkaisiTeisiThread(threading.Thread):
                 return
             return
 
-        if (not self._recording) and match_template(masu1_crop_img, masu_tpl, self.MATCH_THRESHOLD, grayscale=False):
+        try:
+            use_native = (os.getenv("USE_NATIVE_MATCH", "1") or "1").strip().lower() not in ("0", "false", "no")
+        except Exception:
+            use_native = True
+
+        cond_start = False
+        if use_native and _NATIVE_MATCH:
+            cond_start = _match_native_region(self._scene_path, self._masu1_rect, self._masu1_tpl, float(self.MATCH_THRESHOLD))
+        else:
+            cond_start = match_template(masu1_crop_img, masu_tpl, self.MATCH_THRESHOLD, grayscale=False)
+
+        if (not self._recording) and cond_start:
             self._log.log("[録開始/停止] 'masu1' 検出 → 録画開始")
             started = False
             try:
@@ -131,7 +151,12 @@ class RkaisiTeisiThread(threading.Thread):
                     return
                 return
 
-        if self._recording and match_template(mark_crop_img, mark_tpl, self.MATCH_THRESHOLD, grayscale=False):
+        cond_stop = False
+        if use_native and _NATIVE_MATCH:
+            cond_stop = _match_native_region(self._scene_path, self._mark_rect, self._mark_tpl, float(self.MATCH_THRESHOLD))
+        else:
+            cond_stop = match_template(mark_crop_img, mark_tpl, self.MATCH_THRESHOLD, grayscale=False)
+        if self._recording and cond_stop:
             self._log.log("[録開始/停止] 'mark' 検出 → 録画停止")
             # Emit a stop marker for association/default-win logic
             try:

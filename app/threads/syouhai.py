@@ -9,6 +9,15 @@ import cv2
 
 from app.obs_client import ObsClient
 from app.utils.image import Rect, crop_image_by_rect, match_template
+try:
+    from app.utils.native_match import (
+        match_template_region_native as _match_native_region,
+        NATIVE_AVAILABLE as _NATIVE_MATCH,
+    )
+except Exception:
+    def _match_native_region(*_args, **_kwargs):
+        return False
+    _NATIVE_MATCH = False
 from app.utils.logging import UiLogger
 
 
@@ -103,6 +112,18 @@ class SyouhaiThread(threading.Thread):
             img = crops.get(name)
             if tpl is None or img is None:
                 return False
+            try:
+                use_native = (os.getenv("USE_NATIVE_MATCH", "1") or "1").strip().lower() not in ("0", "false", "no")
+            except Exception:
+                use_native = True
+            if use_native and _NATIVE_MATCH:
+                try:
+                    rect = self._rects.get(name)
+                    if rect is None:
+                        return False
+                    return _match_native_region(self._scene_path, rect, self._tpl_paths[name], float(self._threshold))
+                except Exception:
+                    return False
             try:
                 return match_template(img, tpl, threshold=self._threshold, grayscale=True)
             except Exception:
