@@ -95,6 +95,11 @@ def _load_dll() -> None:
 
 
 def is_available() -> bool:
+    import os as _os
+    # Allow disabling native path via env for troubleshooting
+    if (_os.getenv("DISABLE_NATIVE", "").strip().lower() in ("1","true","yes","on") or
+        _os.getenv("DISABLE_NATIVE_AUTOMATION", "").strip().lower() in ("1","true","yes","on")):
+        return False
     _load_dll()
     return bool(_available)
 
@@ -202,13 +207,24 @@ class RkaisiTeisiNativeThread(threading.Thread):
                 return -1
         def _cb_start(_ctx):
             try:
-                self._obs.start_recording()
+                try:
+                    method = self._obs.start_recording_diag()
+                    self._log.log(f"[録開始/停止/N] 開始メソッド: {method}")
+                except Exception:
+                    # Fallback to legacy wrapper
+                    self._obs.start_recording()
+                    self._log.log("[録開始/停止/N] 開始メソッド: legacy")
                 return 0
             except Exception:
                 return -1
         def _cb_stop(_ctx):
             try:
-                self._obs.stop_recording()
+                try:
+                    method = self._obs.stop_recording_diag()
+                    self._log.log(f"[録開始/停止/N] 停止メソッド: {method}")
+                except Exception:
+                    self._obs.stop_recording()
+                    self._log.log("[録開始/停止/N] 停止メソッド: legacy")
                 return 0
             except Exception:
                 return -1
@@ -283,7 +299,22 @@ class RkaisiTeisiNativeThread(threading.Thread):
             try:
                 if self._rec_start_ts is not None:
                     root_base = os.path.dirname(self._handan)
-                    pairs_utils.associate_recording_window(root_base, float(self._rec_start_ts), time.time())
-            except Exception:
-                pass
+                    rec_dir = os.getenv("RECORDINGS_DIR", "").strip()
+                    if not rec_dir:
+                        self._log.log("[組合せ/N] RECORDINGS_DIR が未設定のため録画ファイルを特定できません")
+                    else:
+                        start_ts = float(self._rec_start_ts)
+                        end_ts = time.time()
+                        video = pairs_utils.find_recording_file(rec_dir, start_ts, end_ts)
+                        if not video:
+                            self._log.log("[組合せ/N] 録画ファイルが見つかりませんでした（時間範囲/拡張子/マージンを確認）")
+                        else:
+                            mapping = pairs_utils.associate_recording_window(root_base, start_ts, end_ts)
+                            base = os.path.basename(video)
+                            if mapping is not None:
+                                self._log.log(f"[組合せ/N] 画像と録画を関連付けました -> {base}")
+                            else:
+                                self._log.log(f"[組合せ/N] 関連付けに失敗しました -> {base}")
+            except Exception as e:
+                self._log.log(f"[組合せ/N] エラー: {e}")
             self._log.log("[録開始/停止/N] 停止")

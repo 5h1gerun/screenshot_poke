@@ -24,25 +24,36 @@ if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
 Write-Host "Installing Python dependencies (requirements.txt)"
 py -3 -m pip install -r requirements.txt --disable-pip-version-check | Out-Null
 py -3 -m pip install --upgrade pyinstaller | Out-Null
-py -3 - << 'PY'
-import sys, subprocess
-try:
-    import PIL  # noqa
-except Exception:
-    subprocess.run([sys.executable, '-m', 'pip', 'install', 'pillow'], check=False)
-PY
+py -3 -m pip install pillow --disable-pip-version-check | Out-Null
+
+function New-AppIconFromPng {
+  param([string]$Src = 'icon.png', [string]$Dst = 'packaging/app.ico')
+  try {
+    if (-not (Test-Path $Src)) { return }
+    $dstDir = Split-Path $Dst -Parent
+    if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir | Out-Null }
+    $py = @"
+from PIL import Image
+import sys
+src = r"""$Src"""
+dst = r"""$Dst"""
+im = Image.open(src).convert('RGBA')
+im.save(dst, sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
+print('ICO generated at', dst)
+"@
+    $tmp = Join-Path $env:TEMP 'gen_ico.py'
+    Set-Content -Path $tmp -Value $py -Encoding ASCII
+    & py -3 $tmp | Out-Null
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  } catch {
+    Write-Warning "Icon generation failed: $($_.Exception.Message)"
+  }
+}
 
 # Generate packaging/app.ico from icon.png if needed (used by spec and onefile)
 if (-not (Test-Path 'packaging\app.ico') -and (Test-Path 'icon.png')) {
   Write-Host "Generating packaging\\app.ico from icon.png"
-  py -3 - << 'PY'
-from PIL import Image
-try:
-    Image.open('icon.png').convert('RGBA').save('packaging/app.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
-    print('ICO generated.')
-except Exception as e:
-    print('ICO generation failed:', e)
-PY
+  New-AppIconFromPng -Src 'icon.png' -Dst 'packaging/app.ico'
 }
 if ($OneFile) {
   Write-Host "Building single-file EXE (--onefile)"
@@ -64,19 +75,12 @@ if ($OneFile) {
   $ico = "packaging\app.ico"
   if (-not (Test-Path $ico) -and (Test-Path "icon.png")) {
     Write-Host "Generating packaging\\app.ico from icon.png"
-    py -3 - << 'PY'
-from PIL import Image
-try:
-    Image.open('icon.png').convert('RGBA').save('packaging/app.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
-    print('ICO generated.')
-except Exception as e:
-    print('ICO generation failed:', e)
-PY
+    New-AppIconFromPng -Src 'icon.png' -Dst $ico
   }
   $iconArg = @()
   if (Test-Path $ico) { $iconArg = @('--icon', $ico) }
   py -3 -m PyInstaller --noconfirm --clean --noconsole --name OBS-Screenshot-Tool --onefile @adds @iconArg `
-    --hidden-import customtkinter --hidden-import PIL._tkinter_finder `
+    --hidden-import customtkinter --hidden-import PIL._tkinter_finder --hidden-import obswebsocket --hidden-import darkdetect `
     combined_app.py
 } else {
   py -3 -m PyInstaller --noconfirm --clean packaging/obs_screenshot_tool.spec

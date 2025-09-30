@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cwchar>
+#include <cstdlib>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -17,6 +18,24 @@
 #include <chrono>
 #include <thread>
 #include <mutex>
+
+static bool read_env_bool(const wchar_t* name) {
+    wchar_t buf[16];
+    DWORD n = GetEnvironmentVariableW(name, buf, 16);
+    if (!n || n >= 16) return false;
+    std::wstring v(buf);
+    for (auto& c : v) c = towlower(c);
+    return (v == L"1" || v == L"true" || v == L"yes" || v == L"on");
+}
+
+static double read_env_double(const wchar_t* name, double defv) {
+    wchar_t buf[64];
+    DWORD n = GetEnvironmentVariableW(name, buf, 64);
+    if (!n || n >= 64) return defv;
+    wchar_t* e = nullptr;
+    double v = wcstod(buf, &e);
+    return (v > 0.0) ? v : defv;
+}
 
 struct ComInit {
     bool ok;
@@ -198,23 +217,48 @@ extern "C" __declspec(dllexport) void* start_double_battle_w(
     if (!base_dir || !source_name || !cb_shot) return nullptr;
     auto st = new DoubleState();
     try {
+        // Make safe copies of input strings to avoid dangling pointers
+        std::wstring baseW = base_dir;
+        std::wstring sourceW = source_name ? std::wstring(source_name) : std::wstring();
+        std::wstring haisinY = haisinyou_path ? std::wstring(haisinyou_path) : std::wstring();
+        std::wstring koutikuDir = koutiku_dir ? std::wstring(koutiku_dir) : std::wstring();
+        std::wstring outExt = out_ext && *out_ext ? std::wstring(out_ext) : std::wstring(L"png");
+
         st->th = std::thread([=]() {
             ComInit co; WicFactory wf; if (!wf.ok()) return;
-            std::wstring handan = std::wstring(base_dir) + L"\\handantmp";
-            std::wstring haisin = std::wstring(base_dir) + L"\\haisin";
+            const bool debug = read_env_bool(L"NATIVE_DEBUG");
+            std::wstring handan = baseW + L"\\handantmp";
+            std::wstring haisin = baseW + L"\\haisin";
             std::wstring scene_path = handan + L"\\scene.png";
             std::wstring cropped_path = handan + L"\\screenshot_cropped.png";
             std::wstring masu_path = handan + L"\\masu.png";
             std::wstring masu_area_path = handan + L"\\masu_area.png";
             std::wstring haisinsens_path = haisin + L"\\haisinsensyutu.png";
 
+            // Ensure directories exist (best-effort)
+            ::CreateDirectoryW(handan.c_str(), nullptr);
+            ::CreateDirectoryW(haisin.c_str(), nullptr);
+            if (!koutikuDir.empty()) ::CreateDirectoryW(koutikuDir.c_str(), nullptr);
+            // Ensure directory for haisinyou_path exists
+            if (!haisinY.empty()) {
+                auto p = haisinY;
+                size_t pos = p.find_last_of(L"/\\");
+                if (pos != std::wstring::npos) {
+                    std::wstring dir = p.substr(0, pos);
+                    if (!dir.empty()) ::CreateDirectoryW(dir.c_str(), nullptr);
+                }
+            }
+
             // Rects
             UINT masu_x1 = 1541, masu_y1 = 229, masu_x2 = 1651, masu_y2 = 843;
             UINT ss_x1 = 1221, ss_y1 = 150, ss_x2 = 1655, ss_y2 = 850;
 
+            // minimum rest to avoid hammering OBS when interval is 0
+            double min_ms = read_env_double(L"NATIVE_MIN_INTERVAL_MS", 50.0);
+            if (min_ms < 0.0) min_ms = 0.0;
             auto sleep_until_stop = [&](double sec)->bool { // true if stopped
-                if (sec <= 0) return st->stop.load();
-                const int ms = (int)(sec * 1000.0);
+                int ms = (int)(sec * 1000.0);
+                if (ms <= 0) ms = (int)min_ms;
                 for (int i = 0; i < ms; i += 50) {
                     if (st->stop.load()) return true; std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 }
@@ -222,15 +266,25 @@ extern "C" __declspec(dllexport) void* start_double_battle_w(
             };
 
             if (cb_log) cb_log(ctx, L"[ダブルバトル/N] スレッド開始");
+            if (cb_log && debug) {
+                wchar_t msg[256];
+                swprintf(msg, 256, L"[ダブルバトル/N][dbg] base=%ls src=%ls int=%.3fs min=%gms", baseW.c_str(), sourceW.c_str(), interval_sec, min_ms);
+                cb_log(ctx, msg);
+            }
 
             while (!st->stop.load()) {
                 // screenshot
-                cb_shot(ctx, source_name, scene_path.c_str());
+                int rc_shot = cb_shot ? cb_shot(ctx, sourceW.c_str(), scene_path.c_str()) : -1;
+                if (cb_log && debug) {
+                    wchar_t msg[256]; swprintf(msg, 256, L"[ダブルバトル/N][dbg] take_screenshot rc=%d", rc_shot); cb_log(ctx, msg);
+                }
                 // load scene
                 std::vector<unsigned char> scene; UINT sw=0, sh=0;
                 if (!load_image_bgra(wf.fac, scene_path.c_str(), scene, sw, sh)) {
+                    if (cb_log && debug) cb_log(ctx, L"[ダブルバトル/N][dbg] decode scene failed");
                     if (sleep_until_stop(0.2)) break; else continue;
                 }
+                if (cb_log && debug) { wchar_t m[128]; swprintf(m, 128, L"[ダブルバトル/N][dbg] scene %ux%u", sw, sh); cb_log(ctx, m); }
                 // crop screenshot rect and save
                 std::vector<unsigned char> shot; UINT cw=0, ch=0;
                 crop_bgra(scene, sw, sh, ss_x1, ss_y1, ss_x2, ss_y2, shot, cw, ch);
@@ -251,20 +305,21 @@ extern "C" __declspec(dllexport) void* start_double_battle_w(
                 // NCC match (grayscale)
                 std::vector<float> area_g, masu_g; bgra_to_gray(masu_area, aw, ah, area_g); bgra_to_gray(masu_img, mw, mh, masu_g);
                 double score = max_ncc(area_g, aw, ah, masu_g, mw, mh);
-                if (score >= 0.6) {
+                if (cb_log && debug) { wchar_t m[128]; swprintf(m, 128, L"[ダブルバトル/N][dbg] masu score=%.3f", score); cb_log(ctx, m); }
+                if (score >= 0.5) {
                     if (cb_log) cb_log(ctx, L"[ダブルバトル/N] 'masu' テンプレートを検出");
                     // Write broadcast
-                    if (haisinyou_path && *haisinyou_path) {
-                        save_image_bgra(wf.fac, haisinyou_path, shot.data(), cw, ch);
+                    if (!haisinY.empty()) {
+                        save_image_bgra(wf.fac, haisinY.c_str(), shot.data(), cw, ch);
                     }
                     // Save koutiku with timestamp
-                    if (koutiku_dir && *koutiku_dir) {
+                    if (!koutikuDir.empty()) {
                         SYSTEMTIME stime; GetLocalTime(&stime);
                         wchar_t name[128];
-                        const wchar_t* ext = (out_ext && *out_ext) ? out_ext : L"png";
-                        swprintf(name, 128, L"%04d-%02d-%02d_%02d-%02d-%02d.%s",
+                        const wchar_t* ext = outExt.c_str();
+                        swprintf(name, 128, L"%04d-%02d-%02d_%02d-%02d-%02d.%ls",
                                  stime.wYear, stime.wMonth, stime.wDay, stime.wHour, stime.wMinute, stime.wSecond, ext);
-                        std::wstring out = std::wstring(koutiku_dir) + L"\\" + name;
+                        std::wstring out = koutikuDir + L"\\" + name;
                         save_image_bgra(wf.fac, out.c_str(), shot.data(), cw, ch);
                         if (cb_log) cb_log(ctx, L"[ダブルバトル/N] 構築画像を保存");
                     }
@@ -272,13 +327,14 @@ extern "C" __declspec(dllexport) void* start_double_battle_w(
                     // While masu keeps matching, try to detect tag rows and write combined
                     while (!st->stop.load()) {
                         // refresh
-                        cb_shot(ctx, source_name, scene_path.c_str());
+                        cb_shot(ctx, sourceW.c_str(), scene_path.c_str());
                         if (!load_image_bgra(wf.fac, scene_path.c_str(), scene, sw, sh)) break;
                         crop_bgra(scene, sw, sh, masu_x1, masu_y1, masu_x2, masu_y2, masu_area, aw, ah);
                         save_image_bgra(wf.fac, masu_area_path.c_str(), masu_area.data(), aw, ah);
                         bgra_to_gray(masu_area, aw, ah, area_g);
                         score = max_ncc(area_g, aw, ah, masu_g, mw, mh);
-                        if (score < 0.6) break;
+                        if (cb_log && debug) { wchar_t m2[128]; swprintf(m2, 128, L"[ダブルバトル/N][dbg] loop masu score=%.3f", score); cb_log(ctx, m2); }
+                        if (score < 0.5) break;
 
                         // Prepare 6 row crops
                         struct C { UINT x1,y1,x2,y2; } coords[6] = {
@@ -388,13 +444,16 @@ extern "C" __declspec(dllexport) void* start_rkaisi_teisi_w(
     if (!handan_dir || !source_name || !cb_shot) return nullptr;
     auto st = new RecState();
     try {
+        std::wstring handanW = handan_dir;
+        std::wstring sourceW = source_name ? std::wstring(source_name) : std::wstring();
         st->th = std::thread([=]() {
             ComInit co; WicFactory wf; if (!wf.ok()) return;
-            std::wstring scene_path = std::wstring(handan_dir) + L"\\scene2.png";
-            std::wstring masu_tpl = std::wstring(handan_dir) + L"\\masu1.png";
-            std::wstring mark_tpl = std::wstring(handan_dir) + L"\\mark.png";
-            std::wstring masu_crop_path = std::wstring(handan_dir) + L"\\masu1cropped.png";
-            std::wstring mark_crop_path = std::wstring(handan_dir) + L"\\markcropped.png";
+            const bool debug = read_env_bool(L"NATIVE_DEBUG");
+            std::wstring scene_path = handanW + L"\\scene2.png";
+            std::wstring masu_tpl = handanW + L"\\masu1.png";
+            std::wstring mark_tpl = handanW + L"\\mark.png";
+            std::wstring masu_crop_path = handanW + L"\\masu1cropped.png";
+            std::wstring mark_crop_path = handanW + L"\\markcropped.png";
 
             UINT masu_x1 = 1541, masu_y1 = 229, masu_x2 = 1651, masu_y2 = 843;
             UINT mark_x1 = 0, mark_y1 = 0, mark_x2 = 96, mark_y2 = 72;
@@ -402,9 +461,10 @@ extern "C" __declspec(dllexport) void* start_rkaisi_teisi_w(
             if (cb_log) cb_log(ctx, L"[録開始/停止/N] スレッド開始");
 
             while (!st->stop.load()) {
-                cb_shot(ctx, source_name, scene_path.c_str());
+                int rc_shot = cb_shot ? cb_shot(ctx, sourceW.c_str(), scene_path.c_str()) : -1;
+                if (cb_log && debug) { wchar_t m[128]; swprintf(m, 128, L"[録開始/停止/N][dbg] take_screenshot rc=%d", rc_shot); cb_log(ctx, m); }
                 std::vector<unsigned char> scene; UINT sw=0, sh=0;
-                if (!load_image_bgra(wf.fac, scene_path.c_str(), scene, sw, sh)) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue; }
+                if (!load_image_bgra(wf.fac, scene_path.c_str(), scene, sw, sh)) { if (cb_log && debug) cb_log(ctx, L"[録開始/停止/N][dbg] decode scene failed"); std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue; }
 
                 std::vector<unsigned char> masu_crop, mark_crop; UINT mw=0,mh=0, kw=0,kh=0;
                 crop_bgra(scene, sw, sh, masu_x1, masu_y1, masu_x2, masu_y2, masu_crop, mw, mh);
@@ -424,33 +484,50 @@ extern "C" __declspec(dllexport) void* start_rkaisi_teisi_w(
 
                 double s_masu = max_ncc(g_masu_crop, mw, mh, g_masu_ref, rw1, rh1);
                 double s_mark = max_ncc(g_mark_crop, kw, kh, g_mark_ref, rw2, rh2);
+                if (cb_log && debug) { wchar_t m[160]; swprintf(m, 160, L"[録開始/停止/N][dbg] scores masu=%.3f mark=%.3f th=%.3f", s_masu, s_mark, match_threshold); cb_log(ctx, m); }
 
                 if (!st->recording.load() && s_masu >= match_threshold) {
                     if (cb_log) cb_log(ctx, L"[録開始/停止/N] 'masu1' 検出 → 録画開始");
                     bool started = false;
-                    if (cb_start) { cb_start(ctx); }
-                    for (int i = 0; i < 10; ++i) {
+                    bool anyStartOk = false;
+                    if (cb_start) { if (cb_start(ctx) == 0) anyStartOk = true; }
+                    // Read poll duration seconds (default 2s)
+                    double pollSec = 2.0; wchar_t buf[64]; DWORD n = GetEnvironmentVariableW(L"RKAISI_START_POLL_SEC", buf, 64);
+                    if (n > 0 && n < 64) { wchar_t* endp=nullptr; double v = wcstod(buf, &endp); if (v > 0.0) pollSec = v; }
+                    int iters = (int)(pollSec / 0.2); if (iters < 1) iters = 1;
+                    int unknownCount = 0;
+                    for (int i = 0; i < iters; ++i) {
                         if (st->stop.load()) break;
                         int rec = -1; if (cb_isrec) cb_isrec(ctx, &rec);
                         if (rec == 1) { started = true; break; }
+                        if (rec < 0) { ++unknownCount; }
                         std::this_thread::sleep_for(std::chrono::milliseconds(200));
                     }
+                    if (cb_log && debug) { wchar_t m[160]; swprintf(m, 160, L"[録開始/停止/N][dbg] started=%d unknown=%d anyStartOk=%d", started?1:0, unknownCount, anyStartOk?1:0); cb_log(ctx, m); }
                     if (!started && cb_start) {
-                        cb_start(ctx);
-                        for (int i = 0; i < 10; ++i) {
+                        if (cb_start(ctx) == 0) anyStartOk = true;
+                        for (int i = 0; i < iters; ++i) {
                             if (st->stop.load()) break;
                             int rec = -1; if (cb_isrec) cb_isrec(ctx, &rec);
                             if (rec == 1) { started = true; break; }
+                            if (rec < 0) { ++unknownCount; }
                             std::this_thread::sleep_for(std::chrono::milliseconds(200));
                         }
+                    }
+                    if (!started && unknownCount >= 16 && anyStartOk) {
+                        if (cb_log) cb_log(ctx, L"[録開始/停止/N] 録画状態が不明のため開始扱いで継続");
+                        started = true;
                     }
                     if (started) {
                         st->recording.store(true);
                         double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
                         st->rec_start_ts = now;
                         if (cb_event) cb_event(ctx, 1, now); // 1 = started
-                        // guard period similar to Python (140s)
-                        for (int i = 0; i < 1400; ++i) { if (st->stop.load()) break; std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
+                        // guard period similar to Python (default 140s), env tunable
+                        double guardSec = 140.0; wchar_t b2[64]; DWORD n2 = GetEnvironmentVariableW(L"RKAISI_GUARD_SEC", b2, 64);
+                        if (n2 > 0 && n2 < 64) { wchar_t* e2=nullptr; double v2 = wcstod(b2, &e2); if (v2 > 0.0) guardSec = v2; }
+                        int guardIters = (int)(guardSec / 0.1); if (guardIters < 1) guardIters = 1;
+                        for (int i = 0; i < guardIters; ++i) { if (st->stop.load()) break; std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
                     } else {
                         if (cb_log) cb_log(ctx, L"[録開始/停止/N] 録画が開始されませんでした");
                         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
