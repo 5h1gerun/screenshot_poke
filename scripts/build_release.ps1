@@ -23,12 +23,26 @@ if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
 Write-Host "Installing Python dependencies (requirements.txt)"
 py -3 -m pip install -r requirements.txt --disable-pip-version-check | Out-Null
 py -3 -m pip install --upgrade pyinstaller | Out-Null
+
+# Ensure .ico exists (convert from icon.png if needed)
+$ico = Join-Path $PSScriptRoot '..' | Join-Path -ChildPath 'packaging' | Join-Path -ChildPath 'app.ico'
+$png = Join-Path $PSScriptRoot '..' | Join-Path -ChildPath 'icon.png'
+try {
+  if (-not (Test-Path $ico -PathType Leaf) -and (Test-Path $png -PathType Leaf)) {
+    Write-Host "Converting icon.png -> packaging\\app.ico"
+    py -3 scripts/convert_icon.py
+  }
+} catch {
+  Write-Warning "Icon conversion failed: $($_.Exception.Message)"
+}
 if ($OneFile) {
   Write-Host "Building single-file EXE (--onefile)"
   $adds = @()
   if (Test-Path native\build\thumbnail_wic.dll) { $adds += "--add-binary"; $adds += "native/build/thumbnail_wic.dll;native" }
   if (Test-Path native\build\image_viewer_d2d.exe) { $adds += "--add-binary"; $adds += "native/build/image_viewer_d2d.exe;native" }
-  py -3 -m PyInstaller --noconfirm --clean --noconsole --name OBS-Screenshot-Tool --onefile @adds `
+  $iconArgs = @()
+  if (Test-Path $ico -PathType Leaf) { $iconArgs += @('--icon', 'packaging/app.ico') }
+  py -3 -m PyInstaller --noconfirm --clean --noconsole --name OBS-Screenshot-Tool --onefile @adds @iconArgs `
     --hidden-import customtkinter --hidden-import PIL._tkinter_finder `
     combined_app.py
 } else {
