@@ -253,6 +253,12 @@ extern "C" __declspec(dllexport) void* start_double_battle_w(
             UINT masu_x1 = 1541, masu_y1 = 229, masu_x2 = 1651, masu_y2 = 843;
             UINT ss_x1 = 1221, ss_y1 = 150, ss_x2 = 1655, ss_y2 = 850;
 
+            // Thresholds (overridable via env)
+            // - DOUBLE_MASU_THRESHOLD: NCC threshold to consider 'masu' present (default 0.4)
+            // - DOUBLE_TAG_THRESHOLD: NCC threshold for tag row matching (default 0.4)
+            double masu_present_th = read_env_double(L"DOUBLE_MASU_THRESHOLD", 0.4);
+            double tag_match_th = read_env_double(L"DOUBLE_TAG_THRESHOLD", 0.4);
+
             // minimum rest to avoid hammering OBS when interval is 0
             double min_ms = read_env_double(L"NATIVE_MIN_INTERVAL_MS", 50.0);
             if (min_ms < 0.0) min_ms = 0.0;
@@ -305,8 +311,8 @@ extern "C" __declspec(dllexport) void* start_double_battle_w(
                 // NCC match (grayscale)
                 std::vector<float> area_g, masu_g; bgra_to_gray(masu_area, aw, ah, area_g); bgra_to_gray(masu_img, mw, mh, masu_g);
                 double score = max_ncc(area_g, aw, ah, masu_g, mw, mh);
-                if (cb_log && debug) { wchar_t m[128]; swprintf(m, 128, L"[ダブルバトル/N][dbg] masu score=%.3f", score); cb_log(ctx, m); }
-                if (score >= 0.5) {
+                if (cb_log && debug) { wchar_t m[160]; swprintf(m, 160, L"[ダブルバトル/N][dbg] masu score=%.3f (th=%.2f)", score, masu_present_th); cb_log(ctx, m); }
+                if (score >= masu_present_th) {
                     if (cb_log) cb_log(ctx, L"[ダブルバトル/N] 'masu' テンプレートを検出");
                     // Write broadcast
                     if (!haisinY.empty()) {
@@ -334,7 +340,7 @@ extern "C" __declspec(dllexport) void* start_double_battle_w(
                         bgra_to_gray(masu_area, aw, ah, area_g);
                         score = max_ncc(area_g, aw, ah, masu_g, mw, mh);
                         if (cb_log && debug) { wchar_t m2[128]; swprintf(m2, 128, L"[ダブルバトル/N][dbg] loop masu score=%.3f", score); cb_log(ctx, m2); }
-                        if (score < 0.5) break;
+                        if (score < masu_present_th) break;
 
                         // Prepare 6 row crops
                         struct C { UINT x1,y1,x2,y2; } coords[6] = {
@@ -364,7 +370,7 @@ extern "C" __declspec(dllexport) void* start_double_battle_w(
                         };
 
                         // Greedy matching per tag
-                        const double th = 0.8;
+                        const double th = tag_match_th;
                         int used[6] = {0,0,0,0,0,0};
                         double s; int mi;
                         // tag1

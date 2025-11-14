@@ -858,8 +858,9 @@ class App(ctk.CTk):
         if self.chk_syouhai_var.get():
             self._th_syouhai = SyouhaiThread(self._obs, base_dir, logger, source_name=src, result_queue=self._results_queue)
             self._th_syouhai.start()
-            # Start association thread to tie new images to results. Default-win fallback
-            # is disabled by default to avoid false +1 on first match.
+        # Start association thread when any producer (Syouhai/Rkaisi/DoubleBattle) is enabled.
+        if self.chk_syouhai_var.get() or self.chk_rkaisi_var.get() or self.chk_double_var.get():
+            # Default-win fallback is disabled by default to avoid false +1 on first match.
             # You can enable it via env var ASSOC_DEFAULT_WIN_TIMEOUT (seconds).
             self._th_result_assoc = ResultAssociationThread(
                 base_dir,

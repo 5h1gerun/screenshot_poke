@@ -70,6 +70,18 @@ class PyDoubleBattleThread(threading.Thread):
         self._masu_rect = ((1541, 229), (1651, 843))
         self._screenshot_rect = ((1221, 150), (1655, 850))
 
+        # Thresholds (overridable via env)
+        try:
+            import os as _os
+            self._th_masu = float((_os.getenv("DOUBLE_MASU_THRESHOLD", "0.4") or 0.4))
+        except Exception:
+            self._th_masu = 0.4
+        try:
+            import os as _os
+            self._th_tag = float((_os.getenv("DOUBLE_TAG_THRESHOLD", "0.4") or 0.4))
+        except Exception:
+            self._th_tag = 0.4
+
     # --- public ---
     def stop(self):
         self._stop.set()
@@ -119,7 +131,7 @@ class PyDoubleBattleThread(threading.Thread):
         masu_area_path = os.path.join(self._handan, "masu_area.png")
         cv2.imwrite(masu_area_path, masu_area)
 
-        if match_template(masu_area, masu_img, threshold=0.6, grayscale=False):
+        if match_template(masu_area, masu_img, threshold=self._th_masu, grayscale=False):
             self._log.log("[ダブルバトル] 'masu' テンプレートを検出")
 
             # Keep recent crop for broadcasting
@@ -133,7 +145,7 @@ class PyDoubleBattleThread(threading.Thread):
             self._log.log(f"[ダブルバトル] 保存しました: {dst}")
 
             # While masu continues to appear, attempt to match reference tiles
-            while match_template(masu_area, masu_img, threshold=0.6, grayscale=False):
+            while match_template(masu_area, masu_img, threshold=self._th_masu, grayscale=False):
                 if self._stop.is_set():
                     return
                 self._obs.take_screenshot(self._source, self._scene_path)
@@ -164,7 +176,7 @@ class PyDoubleBattleThread(threading.Thread):
                     for c in cropped_new:
                         if c.shape[0] >= tag.shape[0] and c.shape[1] >= tag.shape[1]:
                             res = cv2.matchTemplate(c, tag, cv2.TM_CCOEFF_NORMED)
-                            if np.any(res >= 0.8):
+                            if np.any(res >= self._th_tag):
                                 matched_new.append(c)
                                 found = True
                                 break
